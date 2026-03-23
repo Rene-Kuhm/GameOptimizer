@@ -126,34 +126,51 @@ set GAME_OPTIMIZER_GAME_PATHS=C:\MyGames;D:\PortableGames
 
 ## GPU telemetry backends
 
-Phase 1 introduces a strategy/provider chain in `backend/app/system.py`.
+Phase 2 keeps the same provider-chain contract in `backend/app/system.py`, adding practical AMD/Intel behavior with safe degradation.
 
 Provider order:
 
 1. NVIDIA native (`nvml`) via `pynvml`
-2. AMD native hook (`amd`) with explicit availability checks (adapter + native library probe)
-3. Intel native hook (`intel`) with explicit availability checks (adapter + native library probe)
-4. WMI live counters (`wmi`) via `GPUEngine` + `Win32_VideoController`
-5. Optional PDH probe fallback (`pdh`) when `win32pdh` GPU counters are visible
-6. Static adapter fallback (`fallback`) via `Win32_VideoController`
+2. AMD native (`amd`) with ordered native attempts:
+   - `pyadl` (if importable and returns telemetry)
+   - ADL via `ctypes` (`atiadlxx.dll` / `atiadlxy.dll`) using Overdrive5 activity calls
+3. Intel native (`intel`) via vendor python module probe (`intel_gpu` / `intel_gpu_tools`) when present and functional
+4. Intel counter correlation (`intel_counter`) via WMI `GPUEngine` (+ `GPUAdapterMemory` when available), Intel-only filtering
+5. WMI live counters (`wmi`) via `GPUEngine` + `Win32_VideoController`
+6. Optional PDH probe fallback (`pdh`) when `win32pdh` GPU counters are visible
+7. Static adapter fallback (`fallback`) via `Win32_VideoController`
 
-`GET /system/metrics` and WS `metrics` payload now include:
+`GET /system/metrics` and WS `metrics` payload include:
 
-- `gpu_source`: active telemetry source (`nvml`, `wmi`, `pdh`, `fallback`, or `unavailable`)
+- `gpu_source`: active telemetry source (`nvml`, `amd`, `intel`, `intel_counter`, `wmi`, `pdh`, `fallback`, or `unavailable`)
 - `gpu_confidence`: deterministic score (0.0 to 1.0)
-- `gpu_confidence_reason`: short explanation of why that confidence was assigned
+- `gpu_confidence_reason`: concise confidence + activation/degradation breadcrumb
+- per-GPU `telemetry_backend` metadata (`backend`, `vendor_native`, `native_path`, optional notes)
 
-Confidence model (deterministic):
+What counts as native active (high confidence):
 
-- High: vendor-native telemetry (`nvml`, future AMD/Intel native implementations)
-- Medium: `wmi` live GPUEngine correlation
-- Low: `pdh` probe/static fallback metadata only
+- `amd`: only when `pyadl` returns AMD telemetry or ADL `ctypes` activity sampling succeeds.
+- `intel`: only when an Intel vendor python module is detected and returns telemetry.
 
-Graceful degradation behavior:
+What is non-native fallback:
 
-- If a provider is unavailable or errors, backend continues to next provider.
-- If no live backend is available, static adapter metadata is still returned when possible.
-- If all GPU backends fail, payload still returns CPU/memory data and `gpu_source="unavailable"` with low confidence.
+- `intel_counter`: Intel adapter telemetry correlated from Windows counters; confidence is medium/low by design.
+- `wmi` / `pdh` / `fallback`: generic Windows telemetry or metadata fallback paths.
+
+Limitations:
+
+- AMD memory usage may come from WMI `GPUAdapterMemory` correlation when ADL-only path cannot expose memory usage directly.
+- Intel native module availability depends on runtime environment; if absent, backend degrades to Intel-specific counter correlation.
+- All providers are best-effort and continue safely on probe/collection errors.
+
+Optional dependency install examples:
+
+```bash
+.venv\Scripts\activate
+pip install pyadl
+```
+
+If Intel native python modules are available in your environment, install them according to vendor documentation and the backend will auto-detect them.
 
 ## Notes on privileges and safety
 

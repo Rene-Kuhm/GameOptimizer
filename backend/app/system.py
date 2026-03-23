@@ -4,6 +4,7 @@ import ctypes
 import importlib
 import importlib.util
 import platform
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
@@ -29,6 +30,42 @@ except Exception:  # pragma: no cover - optional dependency
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float | None = None) -> float | None:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _decode_cstr(value: Any) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+    elif hasattr(value, "raw"):
+        raw = bytes(value.raw)
+    else:
+        return str(value)
+    return raw.split(b"\x00", 1)[0].decode("utf-8", errors="ignore").strip()
+
+
+def _normalize_gpu_name(name: str) -> str:
+    lowered = name.lower()
+    return re.sub(r"[^a-z0-9]+", " ", lowered).strip()
+
+
+def _coalesce_memory_usage(dedicated: int | None, shared: int | None) -> int | None:
+    values = [value for value in [dedicated, shared] if value is not None and value >= 0]
+    if not values:
+        return None
+    return int(sum(values))
 
 
 def _gpu_utilization_map() -> dict[str, float]:
@@ -59,6 +96,22 @@ def _gpu_utilization_map() -> dict[str, float]:
     return totals
 
 
+def _gpu_util_for_adapter_index(adapter_index: int, utilization_by_prefix: dict[str, float]) -> float | None:
+    utilization_percent = utilization_by_prefix.get(f"pid_{adapter_index}")
+    if utilization_percent is None:
+        pid_prefix = f"pid_{adapter_index}_"
+        prefixed_values = [
+            value for key, value in utilization_by_prefix.items() if key.startswith(pid_prefix)
+        ]
+        if prefixed_values:
+            utilization_percent = max(prefixed_values)
+
+    if utilization_percent is None:
+        utilization_percent = utilization_by_prefix.get("__global_engtype_3d__")
+
+    return utilization_percent
+
+
 def _wmi_video_controllers() -> list[Any]:
     if wmi is None:
         return []
@@ -68,6 +121,39 @@ def _wmi_video_controllers() -> list[Any]:
         return list(client.Win32_VideoController())
     except Exception:
         return []
+
+
+def _wmi_video_controller_rows() -> list[tuple[int, Any]]:
+    return list(enumerate(_wmi_video_controllers()))
+
+
+def _gpu_adapter_memory_usage_map() -> dict[str, dict[str, int | None]]:
+    if wmi is None:
+        return {}
+
+    try:
+        perf_wmi = wmi.WMI(namespace="root\\CIMV2")
+        rows = perf_wmi.Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory()
+    except Exception:
+        return {}
+
+    memory_map: dict[str, dict[str, int | None]] = {}
+    for row in rows:
+        name = str(getattr(row, "Name", "") or "")
+        if not name:
+            continue
+        dedicated = _safe_int(getattr(row, "DedicatedUsage", None), default=-1)
+        shared = _safe_int(getattr(row, "SharedUsage", None), default=-1)
+        memory_map[_normalize_gpu_name(name)] = {
+            "memory_dedicated": dedicated if dedicated >= 0 else None,
+            "memory_shared": shared if shared >= 0 else None,
+            "memory_used": _coalesce_memory_usage(
+                dedicated if dedicated >= 0 else None,
+                shared if shared >= 0 else None,
+            ),
+        }
+
+    return memory_map
 
 
 def _gpu_vendor(name: str) -> str:
@@ -103,6 +189,15 @@ def _has_native_amd_lib() -> bool:
     return False
 
 
+def _load_amd_adl_library() -> tuple[Any | None, str]:
+    for dll_name in ["atiadlxx.dll", "atiadlxy.dll"]:
+        try:
+            return ctypes.WinDLL(dll_name), dll_name
+        except Exception:
+            continue
+    return None, ""
+
+
 def _has_native_intel_lib() -> bool:
     for module_name in ["intel_gpu", "intel_gpu_tools"]:
         if importlib.util.find_spec(module_name) is not None:
@@ -118,18 +213,42 @@ def _has_native_intel_lib() -> bool:
     return False
 
 
+def _intel_native_module_name() -> str | None:
+    for module_name in ["intel_gpu", "intel_gpu_tools"]:
+        if importlib.util.find_spec(module_name) is not None:
+            return module_name
+    return None
+
+
 def _collect_vendor_gpu_stub(vendor: str) -> dict[str, Any] | None:
     if vendor == "amd":
+        adl_dll, dll_name = _load_amd_adl_library()
+        has_pyadl = importlib.util.find_spec("pyadl") is not None
         return {
             "backend": "amd_native_hook",
-            "available": _has_native_amd_lib(),
-            "note": "AMD native provider hook active; using non-native telemetry in Phase 1.",
+            "available": has_pyadl or adl_dll is not None,
+            "paths": {
+                "pyadl": has_pyadl,
+                "adl_ctypes": bool(adl_dll),
+            },
+            "note": (
+                "AMD native Phase 2 path not active on current source; "
+                f"pyadl={'yes' if has_pyadl else 'no'}, adl_dll={dll_name or 'not found'}."
+            ),
         }
     if vendor == "intel":
+        native_module = _intel_native_module_name()
         return {
             "backend": "intel_native_hook",
-            "available": _has_native_intel_lib(),
-            "note": "Intel native provider hook active; using non-native telemetry in Phase 1.",
+            "available": bool(native_module) or _has_native_intel_lib(),
+            "paths": {
+                "python_module": native_module or "not found",
+                "dll_probe": _has_native_intel_lib(),
+            },
+            "note": (
+                "Intel native Phase 2 path not active on current source; "
+                f"module={native_module or 'not found'}."
+            ),
         }
     return None
 
@@ -166,6 +285,10 @@ GPU_CONFIDENCE_BY_SOURCE: dict[str, tuple[float, str]] = {
     "nvml": (0.95, "Vendor-native NVIDIA telemetry is active."),
     "amd": (0.90, "Vendor-native AMD telemetry is active."),
     "intel": (0.90, "Vendor-native Intel telemetry is active."),
+    "intel_counter": (
+        0.55,
+        "Intel telemetry is correlated from Windows counters and is not vendor-native.",
+    ),
     "wmi": (0.65, "WMI GPUEngine counters are correlated with adapters."),
     "pdh": (0.40, "PDH GPU counters are available with limited detail."),
     "fallback": (0.25, "Static adapter info is available, without live utilization."),
@@ -252,6 +375,299 @@ class NvidiaNvmlProvider:
                 pass
 
 
+def _record_get(data: Any, *keys: str) -> Any:
+    if isinstance(data, dict):
+        for key in keys:
+            if key in data:
+                return data[key]
+        return None
+
+    for key in keys:
+        if hasattr(data, key):
+            return getattr(data, key)
+    return None
+
+
+def _coerce_records(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, bytearray)):
+        try:
+            return list(value)
+        except Exception:
+            return []
+    return [value]
+
+
+def _extract_vendor_items_from_records(
+    records: list[Any],
+    *,
+    vendor: str,
+    backend: str,
+    native_path: str,
+    note: str,
+) -> list[dict[str, Any]]:
+    memory_usage_by_name = _gpu_adapter_memory_usage_map()
+    items: list[dict[str, Any]] = []
+
+    for record in records:
+        name = _record_get(record, "name", "Name", "adapter_name", "AdapterName", "gpu_name")
+        if not name:
+            continue
+
+        gpu_name = str(name)
+        if _gpu_vendor(gpu_name) != vendor:
+            continue
+
+        adapter_ram = _safe_int(_record_get(record, "memory_total", "MemoryTotal", "adapter_ram"), default=0)
+        memory_used = _safe_int(_record_get(record, "memory_used", "MemoryUsed"), default=-1)
+        utilization_percent = _safe_float(
+            _record_get(record, "utilization_percent", "Utilization", "activity_percent", "gpu_utilization")
+        )
+
+        memory_row = memory_usage_by_name.get(_normalize_gpu_name(gpu_name), {})
+        if memory_used < 0:
+            memory_used = _safe_int(memory_row.get("memory_used"), default=-1)
+        if adapter_ram <= 0:
+            adapter_ram = _safe_int(_record_get(record, "adapter_ram", "AdapterRAM"), default=0)
+
+        items.append(
+            {
+                "name": gpu_name,
+                "driver_version": _record_get(record, "driver_version", "DriverVersion"),
+                "adapter_ram": adapter_ram,
+                "current_refresh_rate": _record_get(
+                    record,
+                    "current_refresh_rate",
+                    "CurrentRefreshRate",
+                ),
+                "utilization_percent": utilization_percent,
+                "memory_used": memory_used if memory_used >= 0 else None,
+                "memory_total": adapter_ram if adapter_ram > 0 else None,
+                "vendor": vendor,
+                "telemetry_backend": _telemetry_backend(
+                    backend,
+                    note=note,
+                    vendor_native=True,
+                    native_path=native_path,
+                ),
+            }
+        )
+
+    return items
+
+
+class _ADLAdapterInfo(ctypes.Structure):
+    _fields_ = [
+        ("iSize", ctypes.c_int),
+        ("iAdapterIndex", ctypes.c_int),
+        ("strUDID", ctypes.c_char * 256),
+        ("iBusNumber", ctypes.c_int),
+        ("iDeviceNumber", ctypes.c_int),
+        ("iFunctionNumber", ctypes.c_int),
+        ("iVendorID", ctypes.c_int),
+        ("strAdapterName", ctypes.c_char * 256),
+        ("strDisplayName", ctypes.c_char * 256),
+        ("iPresent", ctypes.c_int),
+        ("iExist", ctypes.c_int),
+        ("strDriverPath", ctypes.c_char * 256),
+        ("strDriverPathExt", ctypes.c_char * 256),
+        ("strPNPString", ctypes.c_char * 256),
+        ("iOSDisplayIndex", ctypes.c_int),
+    ]
+
+
+class _ADLPMActivity(ctypes.Structure):
+    _fields_ = [
+        ("iSize", ctypes.c_int),
+        ("iEngineClock", ctypes.c_int),
+        ("iMemoryClock", ctypes.c_int),
+        ("iVddc", ctypes.c_int),
+        ("iActivityPercent", ctypes.c_int),
+        ("iCurrentPerformanceLevel", ctypes.c_int),
+        ("iCurrentBusSpeed", ctypes.c_int),
+        ("iCurrentBusLanes", ctypes.c_int),
+        ("iMaximumBusLanes", ctypes.c_int),
+        ("iReserved", ctypes.c_int),
+    ]
+
+
+_ADL_ALLOCATIONS: list[Any] = []
+_ADL_MAIN_MALLOC_CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_int)
+
+
+def _adl_malloc(size: int) -> int:
+    buf = ctypes.create_string_buffer(max(1, size))
+    _ADL_ALLOCATIONS.append(buf)
+    return ctypes.addressof(buf)
+
+
+_ADL_MALLOC_CB = _ADL_MAIN_MALLOC_CALLBACK(_adl_malloc)
+
+
+def _collect_amd_with_pyadl() -> ProviderOutput:
+    if importlib.util.find_spec("pyadl") is None:
+        return ProviderOutput([], "pyadl package unavailable")
+
+    try:
+        pyadl = importlib.import_module("pyadl")
+    except Exception as exc:
+        return ProviderOutput([], f"pyadl import failed: {exc}")
+
+    call_order = ["get_gpus", "get_adapters", "adapters", "devices"]
+    for name in call_order:
+        api = getattr(pyadl, name, None)
+        if not callable(api):
+            continue
+
+        try:
+            records = _coerce_records(api())
+        except TypeError:
+            continue
+        except Exception as exc:
+            return ProviderOutput([], f"pyadl {name}() failed: {exc}")
+
+        items = _extract_vendor_items_from_records(
+            records,
+            vendor="amd",
+            backend="pyadl",
+            native_path="pyadl",
+            note="AMD native telemetry via pyadl.",
+        )
+        if items:
+            return ProviderOutput(items, f"pyadl {name}() sampling succeeded")
+
+    return ProviderOutput([], "pyadl import succeeded but no supported telemetry API returned AMD data")
+
+
+def _collect_amd_with_adl_ctypes() -> ProviderOutput:
+    adl, dll_name = _load_amd_adl_library()
+    if adl is None:
+        return ProviderOutput([], "ADL DLL not found (atiadlxx/atiadlxy)")
+
+    main_create = getattr(adl, "ADL_Main_Control_Create", None)
+    main_destroy = getattr(adl, "ADL_Main_Control_Destroy", None)
+    get_count = getattr(adl, "ADL_Adapter_NumberOfAdapters_Get", None)
+    get_info = getattr(adl, "ADL_Adapter_AdapterInfo_Get", None)
+    get_activity = getattr(adl, "ADL_Overdrive5_CurrentActivity_Get", None)
+    get_active = getattr(adl, "ADL_Adapter_Active_Get", None)
+
+    required = [main_create, main_destroy, get_count, get_info, get_activity]
+    if any(symbol is None for symbol in required):
+        return ProviderOutput([], f"ADL functions missing in {dll_name}")
+
+    assert main_create is not None
+    assert main_destroy is not None
+    assert get_count is not None
+    assert get_info is not None
+    assert get_activity is not None
+
+    main_create_fn: Any = main_create
+    main_destroy_fn: Any = main_destroy
+    get_count_fn: Any = get_count
+    get_info_fn: Any = get_info
+    get_activity_fn: Any = get_activity
+    get_active_fn: Any = get_active
+
+    main_create_fn.argtypes = [_ADL_MAIN_MALLOC_CALLBACK, ctypes.c_int]
+    main_create_fn.restype = ctypes.c_int
+    main_destroy_fn.argtypes = []
+    main_destroy_fn.restype = ctypes.c_int
+    get_count_fn.argtypes = [ctypes.POINTER(ctypes.c_int)]
+    get_count_fn.restype = ctypes.c_int
+    get_info_fn.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    get_info_fn.restype = ctypes.c_int
+    get_activity_fn.argtypes = [ctypes.c_int, ctypes.POINTER(_ADLPMActivity)]
+    get_activity_fn.restype = ctypes.c_int
+    if get_active_fn is not None:
+        get_active_fn.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+        get_active_fn.restype = ctypes.c_int
+
+    create_rc = main_create_fn(_ADL_MALLOC_CB, 1)
+    if create_rc != 0:
+        return ProviderOutput([], f"ADL init failed rc={create_rc}")
+
+    memory_usage_by_name = _gpu_adapter_memory_usage_map()
+    wmi_driver_by_name: dict[str, str | None] = {}
+    wmi_ram_by_name: dict[str, int] = {}
+    for _, controller in _wmi_video_controller_rows():
+        name = str(getattr(controller, "Name", "") or "")
+        if _gpu_vendor(name) != "amd":
+            continue
+        key = _normalize_gpu_name(name)
+        wmi_driver_by_name[key] = getattr(controller, "DriverVersion", None)
+        wmi_ram_by_name[key] = _safe_int(getattr(controller, "AdapterRAM", 0) or 0)
+
+    try:
+        count = ctypes.c_int()
+        count_rc = get_count_fn(ctypes.byref(count))
+        if count_rc != 0 or count.value <= 0:
+            return ProviderOutput([], f"ADL adapter count failed rc={count_rc}")
+
+        adapter_array = (_ADLAdapterInfo * count.value)()
+        info_rc = get_info_fn(ctypes.cast(adapter_array, ctypes.c_void_p), ctypes.sizeof(adapter_array))
+        if info_rc != 0:
+            return ProviderOutput([], f"ADL adapter info failed rc={info_rc}")
+
+        items: list[dict[str, Any]] = []
+        for adapter in adapter_array:
+            name = _decode_cstr(adapter.strAdapterName) or _decode_cstr(adapter.strDisplayName)
+            if not name or _gpu_vendor(name) != "amd":
+                continue
+
+            if get_active_fn is not None:
+                active = ctypes.c_int()
+                active_rc = get_active_fn(adapter.iAdapterIndex, ctypes.byref(active))
+                if active_rc == 0 and active.value == 0:
+                    continue
+
+            activity = _ADLPMActivity()
+            activity.iSize = ctypes.sizeof(_ADLPMActivity)
+            activity_rc = get_activity_fn(adapter.iAdapterIndex, ctypes.byref(activity))
+            if activity_rc != 0:
+                continue
+
+            key = _normalize_gpu_name(name)
+            memory_row = memory_usage_by_name.get(key, {})
+            adapter_ram = wmi_ram_by_name.get(key, 0)
+            memory_used = _safe_int(memory_row.get("memory_used"), default=-1)
+            items.append(
+                {
+                    "name": name,
+                    "driver_version": wmi_driver_by_name.get(key),
+                    "adapter_ram": adapter_ram,
+                    "current_refresh_rate": None,
+                    "utilization_percent": float(activity.iActivityPercent),
+                    "memory_used": memory_used if memory_used >= 0 else None,
+                    "memory_total": adapter_ram if adapter_ram > 0 else None,
+                    "vendor": "amd",
+                    "telemetry_backend": _telemetry_backend(
+                        "adl_overdrive5",
+                        note="AMD native telemetry via ADL Overdrive5; memory usage from WMI GPUAdapterMemory when available.",
+                        vendor_native=True,
+                        native_path="ctypes_adl",
+                        library=dll_name,
+                    ),
+                }
+            )
+
+        if not items:
+            return ProviderOutput([], "ADL initialized but no AMD activity samples were returned")
+
+        return ProviderOutput(items, f"ADL telemetry sampling succeeded via {dll_name}")
+    except Exception as exc:
+        return ProviderOutput([], f"ADL collection failed: {exc}")
+    finally:
+        try:
+            main_destroy_fn()
+        except Exception:
+            pass
+
+
 class AmdNativeHookProvider:
     source = "amd"
 
@@ -259,14 +675,62 @@ class AmdNativeHookProvider:
         if not _gpu_vendor_present("amd"):
             return False, "AMD adapter not detected"
 
-        if not _has_native_amd_lib():
-            return False, "AMD native library not found"
+        has_pyadl = importlib.util.find_spec("pyadl") is not None
+        _, dll_name = _load_amd_adl_library()
+        if not has_pyadl and not dll_name:
+            return False, "AMD native path unavailable: pyadl missing and ADL DLL not found"
 
-        return True, "AMD adapter and native library detected"
+        return True, f"AMD native candidates detected (pyadl={'yes' if has_pyadl else 'no'}, adl={dll_name or 'none'})"
 
     def collect(self) -> ProviderOutput:
-        # Phase 1 hook: explicit strategy exists, with graceful no-data behavior.
-        return ProviderOutput([], "AMD native telemetry hook detected but not yet implemented")
+        pyadl_result = _collect_amd_with_pyadl()
+        if pyadl_result.items:
+            return pyadl_result
+
+        adl_result = _collect_amd_with_adl_ctypes()
+        if adl_result.items:
+            return adl_result
+
+        return ProviderOutput(
+            [],
+            f"AMD native telemetry unavailable after probes: pyadl=({pyadl_result.reason}); adl=({adl_result.reason})",
+        )
+
+
+def _collect_intel_with_python_module() -> ProviderOutput:
+    module_name = _intel_native_module_name()
+    if module_name is None:
+        return ProviderOutput([], "Intel native python module unavailable")
+
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        return ProviderOutput([], f"Intel native module import failed ({module_name}): {exc}")
+
+    call_order = ["get_gpus", "get_adapters", "adapters", "devices"]
+    for name in call_order:
+        api = getattr(module, name, None)
+        if not callable(api):
+            continue
+
+        try:
+            records = _coerce_records(api())
+        except TypeError:
+            continue
+        except Exception as exc:
+            return ProviderOutput([], f"{module_name} {name}() failed: {exc}")
+
+        items = _extract_vendor_items_from_records(
+            records,
+            vendor="intel",
+            backend="intel_python_native",
+            native_path=module_name,
+            note=f"Intel native telemetry via {module_name}.",
+        )
+        if items:
+            return ProviderOutput(items, f"{module_name} {name}() sampling succeeded")
+
+    return ProviderOutput([], f"{module_name} loaded but no supported telemetry API returned Intel data")
 
 
 class IntelNativeHookProvider:
@@ -276,14 +740,70 @@ class IntelNativeHookProvider:
         if not _gpu_vendor_present("intel"):
             return False, "Intel adapter not detected"
 
-        if not _has_native_intel_lib():
-            return False, "Intel native library not found"
+        module_name = _intel_native_module_name()
+        if module_name is None:
+            return False, "Intel native python module not found"
 
-        return True, "Intel adapter and native library detected"
+        return True, f"Intel native module detected: {module_name}"
 
     def collect(self) -> ProviderOutput:
-        # Phase 1 hook: explicit strategy exists, with graceful no-data behavior.
-        return ProviderOutput([], "Intel native telemetry hook detected but not yet implemented")
+        return _collect_intel_with_python_module()
+
+
+class IntelCounterCorrelationProvider:
+    source = "intel_counter"
+
+    def is_available(self) -> tuple[bool, str]:
+        if not _gpu_vendor_present("intel"):
+            return False, "Intel adapter not detected"
+
+        if wmi is None:
+            return False, "wmi package unavailable"
+
+        utilization = _gpu_utilization_map()
+        if not utilization:
+            return False, "WMI GPUEngine counters unavailable for Intel correlation"
+
+        return True, "Intel adapter detected with WMI GPUEngine counters"
+
+    def collect(self) -> ProviderOutput:
+        utilization_by_prefix = _gpu_utilization_map()
+        memory_usage_by_name = _gpu_adapter_memory_usage_map()
+
+        items: list[dict[str, Any]] = []
+        for idx, gpu in _wmi_video_controller_rows():
+            name = str(getattr(gpu, "Name", "Unknown GPU"))
+            if _gpu_vendor(name) != "intel":
+                continue
+
+            normalized = _normalize_gpu_name(name)
+            memory_row = memory_usage_by_name.get(normalized, {})
+            adapter_ram = _safe_int(getattr(gpu, "AdapterRAM", 0) or 0)
+            memory_used = _safe_int(memory_row.get("memory_used"), default=-1)
+            utilization_percent = _gpu_util_for_adapter_index(idx, utilization_by_prefix)
+            items.append(
+                {
+                    "name": name,
+                    "driver_version": getattr(gpu, "DriverVersion", None),
+                    "adapter_ram": adapter_ram,
+                    "current_refresh_rate": getattr(gpu, "CurrentRefreshRate", None),
+                    "utilization_percent": utilization_percent,
+                    "memory_used": memory_used if memory_used >= 0 else None,
+                    "memory_total": adapter_ram if adapter_ram > 0 else None,
+                    "vendor": "intel",
+                    "telemetry_backend": _telemetry_backend(
+                        "intel_wmi_counter",
+                        note="Intel fallback telemetry correlated from WMI GPUEngine/GPUAdapterMemory counters.",
+                        vendor_native=False,
+                        native_path="wmi_counter_correlation",
+                    ),
+                }
+            )
+
+        if not items:
+            return ProviderOutput([], "No Intel adapters were sampled during WMI counter correlation")
+
+        return ProviderOutput(items, "Intel telemetry correlated from WMI counters (non-native)")
 
 
 class WmiGpuEngineProvider:
@@ -432,6 +952,7 @@ def _provider_chain() -> list[GpuTelemetryProvider]:
         NvidiaNvmlProvider(),
         AmdNativeHookProvider(),
         IntelNativeHookProvider(),
+        IntelCounterCorrelationProvider(),
         WmiGpuEngineProvider(),
         PdhFallbackProvider(),
         StaticVideoControllerFallbackProvider(),
@@ -458,7 +979,7 @@ def _select_gpu_telemetry() -> tuple[str, float, str, list[dict[str, Any]]]:
     confidence, confidence_reason = _confidence_for_source("unavailable")
     reason = confidence_reason
     if notes:
-        reason = f"{confidence_reason} {' | '.join(notes[:2])}"
+        reason = f"{confidence_reason} {' | '.join(notes[:3])}"
     return "unavailable", confidence, reason, []
 
 

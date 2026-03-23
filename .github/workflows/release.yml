@@ -58,7 +58,7 @@ jobs:
           $env:PATH = "$($pythonDir.FullName);$env:PATH"
           
           Invoke-WebRequest -Uri https://bootstrap.pypa.io/get-pip.py -OutFile "$($pythonDir.FullName)\get-pip.py"
-          & $pythonExe.FullName "$($pythonDir.FullName)\get-pip.py"
+          & "$($pythonExe.FullName)" "$($pythonDir.FullName)\get-pip.py"
           Remove-Item "$($pythonDir.FullName)\get-pip.py"
 
       - name: Install Node dependencies

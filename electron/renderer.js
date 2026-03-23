@@ -1,4 +1,11 @@
 const config = window.appConfig;
+const appVersion = document.querySelector('meta[name="app-version"]')?.getAttribute('content') || 'unknown';
+
+const latestSnapshot = {
+  metrics: null,
+  hardware: null,
+  watcher: null,
+};
 
 const elements = {
   connectionDot: document.getElementById('connectionDot'),
@@ -11,6 +18,8 @@ const elements = {
   gpuConfidence: document.getElementById('gpuConfidence'),
   gpuDiagMessage: document.getElementById('gpuDiagMessage'),
   gpuDiagTechnical: document.getElementById('gpuDiagTechnical'),
+  copyDiagnosticsButton: document.getElementById('copyDiagnosticsButton'),
+  copyDiagnosticsStatus: document.getElementById('copyDiagnosticsStatus'),
   ramValue: document.getElementById('ramValue'),
   ramDetail: document.getElementById('ramDetail'),
   hardwareList: document.getElementById('hardwareList'),
@@ -109,10 +118,192 @@ function getGpuDiagnostics(metrics) {
   return fallbackGpuDiagnostics(metrics);
 }
 
+function isPathLikeString(value) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || /^https?:\/\//i.test(trimmed)) {
+    return false;
+  }
+
+  const hasSeparator = trimmed.includes('\\') || trimmed.includes('/');
+  if (!hasSeparator) {
+    return false;
+  }
+
+  return /^[a-zA-Z]:[\\/]/.test(trimmed)
+    || /^\\\\/.test(trimmed)
+    || /^\//.test(trimmed)
+    || /(\\Users\\|\/Users\/|\\Program Files\\|\/home\/)/i.test(trimmed);
+}
+
+function redactPathLikeString(value) {
+  const segments = value.split(/[\\/]+/).filter(Boolean);
+  const tail = segments[segments.length - 1];
+  return tail ? `[redacted-path]/${tail}` : '[redacted-path]';
+}
+
+function sanitizeString(value) {
+  if (isPathLikeString(value)) {
+    return redactPathLikeString(value);
+  }
+
+  if (value.length > 400) {
+    return `${value.slice(0, 400)}...[truncated]`;
+  }
+
+  return value;
+}
+
+function sanitizeDiagnosticsValue(value, seen = new WeakSet(), depth = 0) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (depth > 8) {
+    return '[max-depth]';
+  }
+
+  if (typeof value === 'string') {
+    return sanitizeString(value);
+  }
+
+  if (typeof value !== 'object') {
+    return value;
+  }
+
+  if (seen.has(value)) {
+    return '[circular]';
+  }
+
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeDiagnosticsValue(item, seen, depth + 1));
+  }
+
+  const sanitized = {};
+  Object.entries(value).forEach(([key, item]) => {
+    sanitized[key] = sanitizeDiagnosticsValue(item, seen, depth + 1);
+  });
+
+  return sanitized;
+}
+
+function getWatcherLastEventValue(watcher) {
+  const lastEvent = watcher?.last_event;
+  if (!lastEvent) {
+    return '--';
+  }
+
+  if (typeof lastEvent === 'string') {
+    return lastEvent;
+  }
+
+  return lastEvent.type || '--';
+}
+
+function buildDiagnosticsPayload() {
+  const now = new Date();
+  const metrics = latestSnapshot.metrics || {};
+  const hardware = latestSnapshot.hardware || {};
+  const watcher = latestSnapshot.watcher || {};
+  const gpu = Array.isArray(metrics.gpu) && metrics.gpu.length > 0 ? metrics.gpu[0] : null;
+  const diagnostics = metrics.gpu_diagnostics && typeof metrics.gpu_diagnostics === 'object'
+    ? metrics.gpu_diagnostics
+    : getGpuDiagnostics(metrics);
+
+  const payload = {
+    timestamp_local: now.toLocaleString(),
+    app_version: appVersion,
+    gpu_source: metrics.gpu_source || '--',
+    gpu_confidence: typeof metrics.gpu_confidence === 'number' ? metrics.gpu_confidence : null,
+    gpu_confidence_reason: metrics.gpu_confidence_reason || '--',
+    gpu_diagnostics: diagnostics,
+    gpu_first_item_summary: {
+      name: gpu?.name || '--',
+      vendor: gpu?.vendor || '--',
+      driver: gpu?.driver_version || '--',
+      utilization: typeof gpu?.utilization_percent === 'number' ? gpu.utilization_percent : null,
+      telemetry_backend: gpu?.telemetry_backend || '--',
+    },
+    watcher_status: {
+      running: typeof watcher.running === 'boolean' ? watcher.running : null,
+      active_count: watcher.active_count ?? null,
+      last_event: getWatcherLastEventValue(watcher),
+    },
+    hardware_summary: {
+      os: hardware.os || '--',
+      machine: hardware.machine || '--',
+      processor: hardware.processor || '--',
+    },
+  };
+
+  return sanitizeDiagnosticsValue(payload);
+}
+
+function setCopyDiagnosticsStatus(message, kind) {
+  if (!elements.copyDiagnosticsStatus) {
+    return;
+  }
+
+  elements.copyDiagnosticsStatus.textContent = message;
+  elements.copyDiagnosticsStatus.classList.remove('is-success', 'is-error');
+
+  if (kind === 'success' || kind === 'error') {
+    elements.copyDiagnosticsStatus.classList.add(`is-${kind}`);
+  }
+}
+
+function copyWithExecCommand(text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  textarea.style.pointerEvents = 'none';
+  document.body.appendChild(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, text.length);
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch (error) {
+    copied = false;
+  }
+
+  document.body.removeChild(textarea);
+  return copied;
+}
+
+async function copyDiagnosticsToClipboard() {
+  const diagnosticsText = JSON.stringify(buildDiagnosticsPayload(), null, 2);
+
+  try {
+    await navigator.clipboard.writeText(diagnosticsText);
+    setCopyDiagnosticsStatus('Diagnostics copied to clipboard.', 'success');
+    return;
+  } catch (error) {
+    const fallbackCopied = copyWithExecCommand(diagnosticsText);
+    if (fallbackCopied) {
+      setCopyDiagnosticsStatus('Diagnostics copied using fallback clipboard mode.', 'success');
+      return;
+    }
+  }
+
+  setCopyDiagnosticsStatus('Clipboard is blocked. A manual copy dialog was opened (Ctrl+C).', 'error');
+  window.prompt('Copy diagnostics manually (Ctrl+C, Enter):', diagnosticsText);
+}
+
 function renderMetrics(metrics) {
   if (!metrics) {
     return;
   }
+
+  latestSnapshot.metrics = metrics;
 
   elements.cpuValue.textContent = `${Number(metrics.cpu?.percent || 0).toFixed(1)}%`;
   elements.cpuLogical.textContent = metrics.cpu?.count_logical ?? '--';
@@ -144,6 +335,8 @@ function renderHardware(hardware) {
   if (!hardware) {
     return;
   }
+
+  latestSnapshot.hardware = hardware;
 
   const lines = [
     `OS: ${hardware.os || '--'}`,
@@ -186,6 +379,8 @@ function renderWatcher(watcher) {
   if (!watcher) {
     return;
   }
+
+  latestSnapshot.watcher = watcher;
 
   elements.watcherRunning.textContent = watcher.running ? 'Yes' : 'No';
   elements.watcherActive.textContent = String(watcher.active_count ?? 0);
@@ -277,6 +472,12 @@ elements.optimizeForm.addEventListener('submit', async (e) => {
     elements.optimizeResult.textContent = `Failed to apply optimization: ${error.message}`;
   }
 });
+
+if (elements.copyDiagnosticsButton) {
+  elements.copyDiagnosticsButton.addEventListener('click', () => {
+    copyDiagnosticsToClipboard();
+  });
+}
 
 loadInitialData();
 connectWebSocket();

@@ -170,6 +170,11 @@ When utilization is `n/a`, common causes are:
 - fallback provider returning metadata only
 - telemetry provider not available on the host
 
+### Copy diagnostics for bug reports
+
+In the Electron UI, open the GPU card and click `Copy diagnostics` inside the Diagnostics panel.
+This copies a sanitized JSON snapshot (timestamp, app version, GPU source/confidence, `gpu_diagnostics`, first GPU summary, watcher status, and OS/machine/processor) so you can paste it into GitHub issues.
+
 ## Contributing and policies
 
 - `CONTRIBUTING.md`

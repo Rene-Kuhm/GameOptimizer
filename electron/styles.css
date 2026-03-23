@@ -179,6 +179,31 @@ body {
   white-space: pre-wrap;
 }
 
+.gpu-diag-actions {
+  margin-top: 8px;
+}
+
+.copy-diag-btn {
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  border-radius: 8px;
+}
+
+.copy-diag-status {
+  margin: 6px 0 0;
+  min-height: 1em;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.copy-diag-status.is-success {
+  color: var(--accent);
+}
+
+.copy-diag-status.is-error {
+  color: var(--warn);
+}
+
 .panel {
   padding: 14px;
 }

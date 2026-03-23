@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="app-version" content="0.1.0" />
     <title>Game Optimizer</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -38,6 +39,10 @@
               <summary>Technical details</summary>
               <p id="gpuDiagTechnical" class="metric-meta">--</p>
             </details>
+            <div class="gpu-diag-actions">
+              <button id="copyDiagnosticsButton" class="copy-diag-btn" type="button">Copy diagnostics</button>
+            </div>
+            <p id="copyDiagnosticsStatus" class="copy-diag-status" aria-live="polite"></p>
           </div>
         </article>
 

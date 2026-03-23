@@ -7,6 +7,8 @@ const elements = {
   cpuLogical: document.getElementById('cpuLogical'),
   gpuValue: document.getElementById('gpuValue'),
   gpuDriver: document.getElementById('gpuDriver'),
+  gpuSource: document.getElementById('gpuSource'),
+  gpuConfidence: document.getElementById('gpuConfidence'),
   ramValue: document.getElementById('ramValue'),
   ramDetail: document.getElementById('ramDetail'),
   hardwareList: document.getElementById('hardwareList'),
@@ -48,6 +50,13 @@ function renderMetrics(metrics) {
   const gpuUtil = typeof gpu?.utilization_percent === 'number' ? `${gpu.utilization_percent.toFixed(1)}%` : 'n/a';
   elements.gpuValue.textContent = `${gpuUtil}`;
   elements.gpuDriver.textContent = `${gpu?.name || 'Unavailable'} | Driver: ${gpu?.driver_version || '--'}`;
+  elements.gpuSource.textContent = `Source: ${metrics.gpu_source || '--'}`;
+
+  const confidenceScore = typeof metrics.gpu_confidence === 'number'
+    ? `${Math.round(metrics.gpu_confidence * 100)}%`
+    : '--';
+  const confidenceReason = metrics.gpu_confidence_reason || 'No telemetry confidence reason available.';
+  elements.gpuConfidence.textContent = `Confidence: ${confidenceScore} (${confidenceReason})`;
 
   elements.ramValue.textContent = `${Number(metrics.memory?.percent || 0).toFixed(1)}%`;
   elements.ramDetail.textContent = `${formatBytes(metrics.memory?.used)} / ${formatBytes(metrics.memory?.total)}`;

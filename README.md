@@ -126,13 +126,34 @@ set GAME_OPTIMIZER_GAME_PATHS=C:\MyGames;D:\PortableGames
 
 ## GPU telemetry backends
 
-`GET /system/metrics` now includes `gpu_source`:
+Phase 1 introduces a strategy/provider chain in `backend/app/system.py`.
 
-- `nvml`: NVIDIA NVML backend via `pynvml` (`nvidia-ml-py`) when available
-- `wmi`: WMI `GPUEngine` + `Win32_VideoController`
-- `fallback`: vendor-aware summary from `Win32_VideoController` when richer telemetry is unavailable
+Provider order:
 
-AMD/Intel direct telemetry backends are currently stubs/hooks, and gracefully fall back to WMI/fallback mode.
+1. NVIDIA native (`nvml`) via `pynvml`
+2. AMD native hook (`amd`) with explicit availability checks (adapter + native library probe)
+3. Intel native hook (`intel`) with explicit availability checks (adapter + native library probe)
+4. WMI live counters (`wmi`) via `GPUEngine` + `Win32_VideoController`
+5. Optional PDH probe fallback (`pdh`) when `win32pdh` GPU counters are visible
+6. Static adapter fallback (`fallback`) via `Win32_VideoController`
+
+`GET /system/metrics` and WS `metrics` payload now include:
+
+- `gpu_source`: active telemetry source (`nvml`, `wmi`, `pdh`, `fallback`, or `unavailable`)
+- `gpu_confidence`: deterministic score (0.0 to 1.0)
+- `gpu_confidence_reason`: short explanation of why that confidence was assigned
+
+Confidence model (deterministic):
+
+- High: vendor-native telemetry (`nvml`, future AMD/Intel native implementations)
+- Medium: `wmi` live GPUEngine correlation
+- Low: `pdh` probe/static fallback metadata only
+
+Graceful degradation behavior:
+
+- If a provider is unavailable or errors, backend continues to next provider.
+- If no live backend is available, static adapter metadata is still returned when possible.
+- If all GPU backends fail, payload still returns CPU/memory data and `gpu_source="unavailable"` with low confidence.
 
 ## Notes on privileges and safety
 

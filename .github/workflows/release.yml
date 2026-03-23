@@ -52,8 +52,14 @@ jobs:
       - name: Install pip for embedded Python
         shell: pwsh
         run: |
-          $pythonExe = Get-ChildItem -Path python-embeddable -Filter python*.exe | Select-Object -First 1
-          & $pythonExe.FullName -m ensurepip --upgrade
+          $pythonDir = Get-ChildItem -Path python-embeddable -Directory | Select-Object -First 1
+          $pythonExe = Get-ChildItem -Path $pythonDir.FullName -Filter python*.exe | Select-Object -First 1
+          
+          $env:PATH = "$($pythonDir.FullName);$env:PATH"
+          
+          Invoke-WebRequest -Uri https://bootstrap.pypa.io/get-pip.py -OutFile "$($pythonDir.FullName)\get-pip.py"
+          & $pythonExe.FullName "$($pythonDir.FullName)\get-pip.py"
+          Remove-Item "$($pythonDir.FullName)\get-pip.py"
 
       - name: Install Node dependencies
         run: npm ci

@@ -28,38 +28,10 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      - name: Setup Python (for build/dev)
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Cache Python embeddable
-        id: cache-python-embed
-        uses: actions/cache@v4
-        with:
-          path: python-embeddable
-          key: python-embeddable-3.11.9-amd64
-
-      - name: Download Python embeddable if not cached
-        if: steps.cache-python-embed.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $url = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
-          Invoke-WebRequest -Uri $url -OutFile python-embeddable.zip
-          Expand-Archive -Path python-embeddable.zip -DestinationPath python-embeddable
-          Remove-Item python-embeddable.zip
-
-      - name: Install pip for embedded Python
-        shell: pwsh
-        run: |
-          $pythonDir = Get-ChildItem -Path python-embeddable -Directory | Select-Object -First 1
-          $pythonExe = Get-ChildItem -Path $pythonDir.FullName -Filter python*.exe | Select-Object -First 1
-          
-          $env:PATH = "$($pythonDir.FullName);$env:PATH"
-          
-          Invoke-WebRequest -Uri https://bootstrap.pypa.io/get-pip.py -OutFile "$($pythonDir.FullName)\get-pip.py"
-          & "$($pythonExe.FullName)" "$($pythonDir.FullName)\get-pip.py"
-          Remove-Item "$($pythonDir.FullName)\get-pip.py"
 
       - name: Install Node dependencies
         run: npm ci

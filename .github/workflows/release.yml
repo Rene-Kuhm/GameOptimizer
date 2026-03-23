@@ -45,7 +45,7 @@ jobs:
         run: |
           node --check electron/main.js
           node --check electron/renderer.js
-          python -m py_compile backend/app/*.py
+          python -m py_compile backend/app/main.py backend/app/system.py backend/app/discovery.py backend/app/optimizer.py backend/app/watcher.py backend/app/profiles.py
 
       - name: Build Windows installers
         run: npm run dist:win

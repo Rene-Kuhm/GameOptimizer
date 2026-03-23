@@ -88,9 +88,55 @@ npm start
 - `POST /optimize/apply`
 - `WS /ws/metrics`
 
+## Game discovery providers (Windows, best-effort)
+
+The backend now uses a provider-based discovery pipeline and merges duplicates by normalized title + executable path.
+
+- Steam manifests (`appmanifest_*.acf` + library folders)
+- Epic Games manifests (`ProgramData/Epic/.../*.item`)
+- GOG Galaxy (manifest-like JSON where present + uninstall registry fallback)
+- Battle.net / Blizzard (registry install metadata, icon path hints)
+- Ubisoft Connect (registry install metadata)
+- EA App / Origin (registry install metadata)
+- Xbox PC games where detectable (`C:\XboxGames` and `Program Files\XboxGames`, best-effort)
+- Generic filesystem scan provider for non-launcher installs
+
+`GET /games` still returns the same contract (`games`, `count`) with richer `metadata` fields:
+
+- `metadata.providers` list (all providers that matched the same game)
+- `metadata.executables` with executable metadata (`path`, `file_size`, `mtime`, optional hash/signature when requested by matcher)
+
+### Non-launcher scan behavior
+
+The generic scan provider searches practical roots and tries to detect plausible game executables while skipping typical launcher/updater binaries.
+
+Default roots include:
+
+- `C:\Program Files\Games`
+- `C:\Program Files (x86)\Games`
+- `C:\Games`, `D:\Games`, `E:\Games`
+- `C:\Program Files\Epic Games`
+- Steam library roots discovered from `libraryfolders.vdf`
+
+Custom roots can be added with environment variable:
+
+```bash
+set GAME_OPTIMIZER_GAME_PATHS=C:\MyGames;D:\PortableGames
+```
+
+## GPU telemetry backends
+
+`GET /system/metrics` now includes `gpu_source`:
+
+- `nvml`: NVIDIA NVML backend via `pynvml` (`nvidia-ml-py`) when available
+- `wmi`: WMI `GPUEngine` + `Win32_VideoController`
+- `fallback`: vendor-aware summary from `Win32_VideoController` when richer telemetry is unavailable
+
+AMD/Intel direct telemetry backends are currently stubs/hooks, and gracefully fall back to WMI/fallback mode.
+
 ## Notes on privileges and safety
 
 - Setting process priorities may require Administrator rights for some processes.
 - If access is denied, backend returns graceful error details and keeps running.
-- GPU info is best-effort through WMI (`Win32_VideoController`) and can be partial/missing on some systems.
-- Game discovery is best-effort and depends on installed launcher metadata and manifest consistency.
+- GPU telemetry is best-effort and backend-dependent (`nvml`, `wmi`, `fallback`).
+- Game discovery is best-effort and depends on installed metadata, filesystem visibility, and permissions.

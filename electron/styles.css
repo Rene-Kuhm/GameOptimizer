@@ -144,6 +144,41 @@ body {
   line-height: 1.3;
 }
 
+.gpu-diagnostics {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(158, 197, 241, 0.2);
+}
+
+.gpu-diag-title {
+  margin-top: 0 !important;
+  margin-bottom: 4px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.gpu-diag-message {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: #d5e8ff;
+}
+
+.gpu-diag-details {
+  margin-top: 6px;
+}
+
+.gpu-diag-details summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--accent-2);
+}
+
+.gpu-diag-details p {
+  margin-top: 6px !important;
+  white-space: pre-wrap;
+}
+
 .panel {
   padding: 14px;
 }

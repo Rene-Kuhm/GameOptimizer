@@ -9,6 +9,8 @@ const elements = {
   gpuDriver: document.getElementById('gpuDriver'),
   gpuSource: document.getElementById('gpuSource'),
   gpuConfidence: document.getElementById('gpuConfidence'),
+  gpuDiagMessage: document.getElementById('gpuDiagMessage'),
+  gpuDiagTechnical: document.getElementById('gpuDiagTechnical'),
   ramValue: document.getElementById('ramValue'),
   ramDetail: document.getElementById('ramDetail'),
   hardwareList: document.getElementById('hardwareList'),
@@ -38,6 +40,75 @@ function setConnected(connected) {
   elements.connectionText.textContent = connected ? 'Live telemetry connected' : 'Disconnected';
 }
 
+function hasNumericGpuSample(gpuList) {
+  if (!Array.isArray(gpuList)) {
+    return false;
+  }
+
+  return gpuList.some((gpu) => typeof gpu?.utilization_percent === 'number' && Number.isFinite(gpu.utilization_percent));
+}
+
+function fallbackGpuDiagnostics(metrics) {
+  const source = metrics?.gpu_source || 'unavailable';
+  const confidenceReason = metrics?.gpu_confidence_reason || 'No telemetry confidence reason available.';
+  const sampleAvailable = hasNumericGpuSample(metrics?.gpu);
+
+  if (sampleAvailable) {
+    return {
+      status: 'ok',
+      reason: 'Live GPU utilization sample available.',
+      source_note: confidenceReason,
+      provider_notes: [],
+      sample_state: 'sample_available',
+    };
+  }
+
+  if (source === 'fallback' || source === 'pdh') {
+    return {
+      status: 'metadata_only',
+      reason: 'This provider exposes adapter metadata only, so utilization is shown as n/a.',
+      source_note: confidenceReason,
+      provider_notes: [],
+      sample_state: 'metadata_only',
+    };
+  }
+
+  if (source === 'wmi' || source === 'intel_counter') {
+    return {
+      status: 'no_sample',
+      reason: 'No GPUEngine utilization sample was returned in this capture window.',
+      source_note: confidenceReason,
+      provider_notes: [],
+      sample_state: 'no_sample',
+    };
+  }
+
+  return {
+    status: source === 'unavailable' ? 'provider_unavailable' : 'unknown',
+    reason: source === 'unavailable'
+      ? 'No GPU telemetry provider is currently available.'
+      : 'GPU diagnostics field is not present in backend response.',
+    source_note: confidenceReason,
+    provider_notes: [],
+    sample_state: source === 'unavailable' ? 'provider_unavailable' : 'unknown',
+  };
+}
+
+function getGpuDiagnostics(metrics) {
+  const diagnostics = metrics?.gpu_diagnostics;
+  if (diagnostics && typeof diagnostics === 'object') {
+    return {
+      status: diagnostics.status || 'unknown',
+      reason: diagnostics.reason || 'No diagnostic reason provided.',
+      source_note: diagnostics.source_note || metrics?.gpu_confidence_reason || 'No source note available.',
+      provider_notes: Array.isArray(diagnostics.provider_notes) ? diagnostics.provider_notes : [],
+      sample_state: diagnostics.sample_state || 'unknown',
+    };
+  }
+
+  return fallbackGpuDiagnostics(metrics);
+}
+
 function renderMetrics(metrics) {
   if (!metrics) {
     return;
@@ -57,6 +128,13 @@ function renderMetrics(metrics) {
     : '--';
   const confidenceReason = metrics.gpu_confidence_reason || 'No telemetry confidence reason available.';
   elements.gpuConfidence.textContent = `Confidence: ${confidenceScore} (${confidenceReason})`;
+
+  const diagnostics = getGpuDiagnostics(metrics);
+  const providerNotes = diagnostics.provider_notes.length > 0
+    ? diagnostics.provider_notes.join(' | ')
+    : 'No provider notes available.';
+  elements.gpuDiagMessage.textContent = diagnostics.reason;
+  elements.gpuDiagTechnical.textContent = `Status: ${diagnostics.status}\nSample state: ${diagnostics.sample_state}\nSource note: ${diagnostics.source_note}\nProvider notes: ${providerNotes}`;
 
   elements.ramValue.textContent = `${Number(metrics.memory?.percent || 0).toFixed(1)}%`;
   elements.ramDetail.textContent = `${formatBytes(metrics.memory?.used)} / ${formatBytes(metrics.memory?.total)}`;

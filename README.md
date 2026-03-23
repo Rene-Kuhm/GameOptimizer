@@ -154,6 +154,22 @@ Current source order is vendor-native first, then safe fallbacks:
 
 Use `GAME_OPTIMIZER_TELEMETRY_PROVIDER` to prefer one provider at runtime.
 
+## GPU diagnostics (`n/a` utilization)
+
+`GET /system/metrics` now includes additive `gpu_diagnostics` data:
+
+- `status`: `ok`, `no_sample`, `metadata_only`, or `provider_unavailable`
+- `reason`: short user-facing reason for why utilization is numeric or `n/a`
+- `source_note`: provider-specific technical note
+- `provider_notes[]`: probe chain notes used to select/fallback providers
+- `sample_state`: sample quality marker (for UI detail panels)
+
+When utilization is `n/a`, common causes are:
+
+- no active 3D engine sample in the current WMI window
+- fallback provider returning metadata only
+- telemetry provider not available on the host
+
 ## Contributing and policies
 
 - `CONTRIBUTING.md`

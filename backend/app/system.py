@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import importlib
 import importlib.util
+import math
 import os
 import platform
 import re
@@ -972,7 +973,7 @@ def _provider_chain() -> list[GpuTelemetryProvider]:
     return chain
 
 
-def _select_gpu_telemetry() -> tuple[str, float, str, list[dict[str, Any]]]:
+def _select_gpu_telemetry() -> tuple[str, float, str, list[dict[str, Any]], list[str], str]:
     notes: list[str] = []
 
     for provider in _provider_chain():
@@ -985,7 +986,8 @@ def _select_gpu_telemetry() -> tuple[str, float, str, list[dict[str, Any]]]:
         if result.items:
             confidence, confidence_reason = _confidence_for_source(provider.source)
             reason = f"{confidence_reason} {result.reason}"
-            return provider.source, confidence, reason, result.items
+            source_note = f"{provider.source}: {result.reason}"
+            return provider.source, confidence, reason, result.items, notes + [source_note], source_note
 
         notes.append(f"{provider.source}: {result.reason}")
 
@@ -993,13 +995,108 @@ def _select_gpu_telemetry() -> tuple[str, float, str, list[dict[str, Any]]]:
     reason = confidence_reason
     if notes:
         reason = f"{confidence_reason} {' | '.join(notes[:3])}"
-    return "unavailable", confidence, reason, []
+    source_note = notes[0] if notes else confidence_reason
+    return "unavailable", confidence, reason, [], notes, source_note
+
+
+def _has_numeric_gpu_sample(gpu_list: list[dict[str, Any]]) -> bool:
+    for gpu in gpu_list:
+        utilization = gpu.get("utilization_percent")
+        if isinstance(utilization, (int, float)) and math.isfinite(float(utilization)):
+            return True
+    return False
+
+
+def _gpu_diagnostic_reason_for_missing_sample(
+    gpu_source: str,
+    gpu_list: list[dict[str, Any]],
+    provider_notes: list[str],
+) -> tuple[str, str]:
+    if gpu_source == "wmi":
+        if not gpu_list:
+            return (
+                "provider_unavailable",
+                "WMI was selected but no GPU adapters were sampled.",
+            )
+        return (
+            "no_sample",
+            "WMI did not return GPUEngine utilization samples (no active 3D engines or missing sample window).",
+        )
+
+    if gpu_source == "intel_counter":
+        return (
+            "no_sample",
+            "Intel counter correlation returned adapters, but no GPUEngine utilization sample was available.",
+        )
+
+    if gpu_source == "pdh":
+        return (
+            "metadata_only",
+            "PDH fallback is in metadata-only mode; utilization is not sampled in this provider path.",
+        )
+
+    if gpu_source == "fallback":
+        return (
+            "metadata_only",
+            "Fallback adapter metadata is available, but live GPU utilization is not provided.",
+        )
+
+    if gpu_source == "unavailable":
+        return (
+            "provider_unavailable",
+            "No GPU telemetry provider is currently available.",
+        )
+
+    if not gpu_list and provider_notes:
+        return (
+            "provider_unavailable",
+            "Selected GPU provider did not return adapter samples.",
+        )
+
+    return (
+        "no_sample",
+        "GPU provider returned adapter data without a utilization sample.",
+    )
+
+
+def _build_gpu_diagnostics(
+    gpu_source: str,
+    gpu_confidence_reason: str,
+    gpu_list: list[dict[str, Any]],
+    provider_notes: list[str],
+    source_note: str,
+) -> dict[str, Any]:
+    has_numeric_sample = _has_numeric_gpu_sample(gpu_list)
+    if has_numeric_sample:
+        return {
+            "status": "ok",
+            "reason": "Live GPU utilization sample available.",
+            "source_note": source_note,
+            "provider_notes": provider_notes,
+            "sample_state": "sample_available",
+        }
+
+    status, reason = _gpu_diagnostic_reason_for_missing_sample(gpu_source, gpu_list, provider_notes)
+    return {
+        "status": status,
+        "reason": reason,
+        "source_note": source_note or gpu_confidence_reason,
+        "provider_notes": provider_notes,
+        "sample_state": "no_sample" if status == "no_sample" else status,
+    }
 
 
 def get_system_metrics() -> dict[str, Any]:
     memory = psutil.virtual_memory()
     cpu_percent = psutil.cpu_percent(interval=None)
-    gpu_source, gpu_confidence, gpu_confidence_reason, gpu_list = _select_gpu_telemetry()
+    gpu_source, gpu_confidence, gpu_confidence_reason, gpu_list, provider_notes, source_note = _select_gpu_telemetry()
+    gpu_diagnostics = _build_gpu_diagnostics(
+        gpu_source,
+        gpu_confidence_reason,
+        gpu_list,
+        provider_notes,
+        source_note,
+    )
 
     return {
         "timestamp": now_iso(),
@@ -1017,6 +1114,7 @@ def get_system_metrics() -> dict[str, Any]:
         "gpu_confidence": gpu_confidence,
         "gpu_confidence_reason": gpu_confidence_reason,
         "gpu": gpu_list,
+        "gpu_diagnostics": gpu_diagnostics,
     }
 
 

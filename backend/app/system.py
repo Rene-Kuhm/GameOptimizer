@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import importlib
 import importlib.util
+import os
 import platform
 import re
 from dataclasses import dataclass
@@ -948,7 +949,7 @@ class StaticVideoControllerFallbackProvider:
 
 
 def _provider_chain() -> list[GpuTelemetryProvider]:
-    return [
+    chain: list[GpuTelemetryProvider] = [
         NvidiaNvmlProvider(),
         AmdNativeHookProvider(),
         IntelNativeHookProvider(),
@@ -957,6 +958,18 @@ def _provider_chain() -> list[GpuTelemetryProvider]:
         PdhFallbackProvider(),
         StaticVideoControllerFallbackProvider(),
     ]
+
+    preferred = os.environ.get("GAME_OPTIMIZER_TELEMETRY_PROVIDER", "").strip().lower()
+    if not preferred:
+        return chain
+
+    preferred_idx = next((idx for idx, provider in enumerate(chain) if provider.source == preferred), None)
+    if preferred_idx is None:
+        return chain
+
+    preferred_provider = chain.pop(preferred_idx)
+    chain.insert(0, preferred_provider)
+    return chain
 
 
 def _select_gpu_telemetry() -> tuple[str, float, str, list[dict[str, Any]]]:

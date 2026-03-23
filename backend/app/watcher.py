@@ -10,8 +10,12 @@ from typing import Any
 import psutil
 
 from .executable_meta import get_executable_metadata_cache
+from .logging_setup import get_logger
 from .models import GameEntry, WatcherEvent
-from .optimizer import apply_profile
+from .optimizer import apply_profile, rollback_session
+from .profiles import OptimizationProfiles
+
+logger = get_logger(__name__)
 
 
 def _now_iso() -> str:
@@ -76,14 +80,17 @@ class ProcessSnapshot:
 
 
 class GameWatcher:
-    def __init__(self, poll_interval_seconds: int = 3) -> None:
+    def __init__(self, poll_interval_seconds: int = 3, profile_resolver: OptimizationProfiles | None = None) -> None:
         self.poll_interval_seconds = poll_interval_seconds
         self._games: list[GameEntry] = []
         self._profiles: list[GameProfile] = []
         self._active_by_id: dict[str, ActiveGame] = {}
+        self._optimization_sessions: dict[str, dict[str, Any]] = {}
+        self._profile_resolver = profile_resolver or OptimizationProfiles()
         self._metadata_cache = get_executable_metadata_cache()
         self.last_detected: dict[str, Any] | None = None
         self.last_event: dict[str, Any] | None = None
+        self.last_optimization_action: dict[str, Any] | None = None
         self.running = False
 
     def set_games(self, games: list[GameEntry]) -> None:
@@ -259,7 +266,50 @@ class GameWatcher:
             stopped = [item for gid, item in self._active_by_id.items() if gid not in scanned]
 
             for game in started:
-                optimize_result = apply_profile(game.process_name, profile=default_profile)
+                profile_name, profile_config, profile_resolution = self._profile_resolver.resolve_for_game(
+                    game.game,
+                    default_profile,
+                    process_name=game.process_name,
+                    process_path=game.process_exe,
+                )
+                optimize_result = apply_profile(
+                    game.process_name,
+                    profile=profile_name,
+                    target_pid=game.pid,
+                    profile_config=profile_config,
+                )
+
+                session_changes = optimize_result.get("session_changes")
+                if isinstance(session_changes, list) and session_changes:
+                    self._optimization_sessions[game.game.id] = {
+                        "pid": game.pid,
+                        "process_name": game.process_name,
+                        "profile": profile_name,
+                        "session_changes": session_changes,
+                        "started_at": _now_iso(),
+                    }
+
+                self.last_optimization_action = {
+                    "phase": "apply",
+                    "timestamp": _now_iso(),
+                    "game_id": game.game.id,
+                    "game_name": game.game.name,
+                    "profile": profile_name,
+                    "applied": len(optimize_result.get("applied", [])),
+                    "skipped": len(optimize_result.get("skipped", [])),
+                    "failed": len(optimize_result.get("failed", [])),
+                    "success": optimize_result.get("success", False),
+                }
+                logger.info(
+                    "watcher_apply game=%s pid=%s profile=%s applied=%s skipped=%s failed=%s",
+                    game.game.name,
+                    game.pid,
+                    profile_name,
+                    len(optimize_result.get("applied", [])),
+                    len(optimize_result.get("skipped", [])),
+                    len(optimize_result.get("failed", [])),
+                )
+
                 event = WatcherEvent(
                     event="game_started",
                     game_id=game.game.id,
@@ -269,6 +319,7 @@ class GameWatcher:
                     timestamp=_now_iso(),
                     details={
                         "optimization": optimize_result,
+                        "profile_resolution": profile_resolution,
                         "matching": {
                             "confidence": round(game.confidence, 3),
                             "reason": game.reason,
@@ -293,6 +344,30 @@ class GameWatcher:
                 await event_callback(event)
 
             for game in stopped:
+                rollback_result: dict[str, Any] | None = None
+                optimization_session = self._optimization_sessions.pop(game.game.id, None)
+                if optimization_session is not None:
+                    rollback_result = rollback_session(optimization_session.get("session_changes"))
+                    self.last_optimization_action = {
+                        "phase": "rollback",
+                        "timestamp": _now_iso(),
+                        "game_id": game.game.id,
+                        "game_name": game.game.name,
+                        "profile": optimization_session.get("profile"),
+                        "applied": len(rollback_result.get("applied", [])),
+                        "skipped": len(rollback_result.get("skipped", [])),
+                        "failed": len(rollback_result.get("failed", [])),
+                        "success": rollback_result.get("success", False),
+                    }
+                    logger.info(
+                        "watcher_rollback game=%s pid=%s applied=%s skipped=%s failed=%s",
+                        game.game.name,
+                        game.pid,
+                        len(rollback_result.get("applied", [])),
+                        len(rollback_result.get("skipped", [])),
+                        len(rollback_result.get("failed", [])),
+                    )
+
                 event = WatcherEvent(
                     event="game_stopped",
                     game_id=game.game.id,
@@ -301,6 +376,7 @@ class GameWatcher:
                     pid=game.pid,
                     timestamp=_now_iso(),
                     details={
+                        "rollback": rollback_result,
                         "matching": {
                             "confidence": round(game.confidence, 3),
                             "reason": game.reason,
@@ -326,8 +402,10 @@ class GameWatcher:
         return {
             "running": self.running,
             "active_count": len(self._active_by_id),
+            "tracked_optimization_sessions": len(self._optimization_sessions),
             "last_detected": self.last_detected,
             "last_event": self.last_event,
+            "last_optimization_action": self.last_optimization_action,
             "matching_strategy": {
                 "name": "scored_executable_path_title",
                 "confidence_threshold": 0.62,

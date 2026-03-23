@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "profiles": {
+    "default": {
+      "target_priority": "high",
+      "background_priority": "below_normal",
+      "background_processes": [
+        "chrome.exe",
+        "msedge.exe",
+        "discord.exe",
+        "spotify.exe",
+        "onedrive.exe"
+      ],
+      "cpu_affinity": null
+    },
+    "safe": {
+      "target_priority": "normal",
+      "background_priority": null,
+      "background_processes": [],
+      "cpu_affinity": null
+    }
+  },
+  "overrides": [
+    {
+      "name": "example-high-fps-profile",
+      "disabled": true,
+      "match": {
+        "executable_names": [
+          "examplegame.exe"
+        ],
+        "providers": [
+          "steam"
+        ],
+        "executable_paths_contains": [
+          "\\games\\examplegame\\"
+        ]
+      },
+      "profile": "default",
+      "settings": {
+        "cpu_affinity": [
+          0,
+          1,
+          2,
+          3
+        ]
+      }
+    }
+  ]
+}

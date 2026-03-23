@@ -50,9 +50,34 @@ function stopBackend() {
   backendProcess = null;
 }
 
-function waitForBackend(retries = 25, delayMs = 400) {
+function waitForBackend({
+  maxWaitMs = 60000,
+  initialDelayMs = 250,
+  maxDelayMs = 2000,
+  requestTimeoutMs = 1500,
+} = {}) {
   return new Promise((resolve, reject) => {
-    const tryHealth = (remaining) => {
+    const startedAt = Date.now();
+    let attempt = 0;
+
+    const scheduleRetry = (lastError) => {
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= maxWaitMs) {
+        reject(new Error(`Backend not reachable after ${Math.round(elapsed / 1000)}s (${lastError.message})`));
+        return;
+      }
+
+      const delay = Math.min(initialDelayMs * (2 ** attempt), maxDelayMs);
+      attempt += 1;
+      setTimeout(tryHealth, delay);
+    };
+
+    const tryHealth = () => {
+      if (!backendProcess) {
+        reject(new Error('Backend process is not running'));
+        return;
+      }
+
       const req = http.get(`${BACKEND_BASE_URL}/health`, (res) => {
         res.resume();
         if (res.statusCode === 200) {
@@ -60,24 +85,19 @@ function waitForBackend(retries = 25, delayMs = 400) {
           return;
         }
 
-        if (remaining <= 0) {
-          reject(new Error('Backend failed health check'));
-          return;
-        }
-
-        setTimeout(() => tryHealth(remaining - 1), delayMs);
+        scheduleRetry(new Error(`Health check returned ${res.statusCode}`));
       });
 
-      req.on('error', () => {
-        if (remaining <= 0) {
-          reject(new Error('Backend not reachable'));
-          return;
-        }
-        setTimeout(() => tryHealth(remaining - 1), delayMs);
+      req.setTimeout(requestTimeoutMs, () => {
+        req.destroy(new Error('Health check timeout'));
+      });
+
+      req.on('error', (error) => {
+        scheduleRetry(error);
       });
     };
 
-    tryHealth(retries);
+    tryHealth();
   });
 }
 

@@ -60,6 +60,18 @@ npm start
 
 Electron `main.js` starts the backend automatically with Uvicorn at `http://127.0.0.1:8765`.
 
+## Troubleshooting / recent hotfix
+
+- If installation fails on `pywin32==306`, use the current pinned selector in `backend/requirements.txt`: `pywin32>=311; platform_system == "Windows"`.
+- If you see WebSocket `Unsupported upgrade request`, use `websockets==12.0`.
+- After updating dependencies, reinstall inside `.venv` and relaunch the app:
+
+```bash
+.venv\Scripts\activate
+pip install -r backend/requirements.txt
+npm start
+```
+
 ## API endpoints
 
 - `GET /health`

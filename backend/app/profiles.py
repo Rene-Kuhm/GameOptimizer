@@ -35,8 +35,12 @@ def _normalize_text(value: str) -> str:
     return value.lower().strip()
 
 
+def _normalize_path_text(value: str) -> str:
+    return _normalize_text(value).replace("\\", "/")
+
+
 def _match_override(
-    match: dict[str, Any],
+    match: Any,
     *,
     executable_names: set[str],
     executable_paths: set[str],
@@ -49,7 +53,7 @@ def _match_override(
     if override_exec_names and not override_exec_names.intersection(executable_names):
         return False
 
-    override_paths_contains = [_normalize_text(item) for item in match.get("executable_paths_contains", []) if item]
+    override_paths_contains = [_normalize_path_text(item) for item in match.get("executable_paths_contains", []) if item]
     if override_paths_contains and not any(
         needle in target_path
         for needle in override_paths_contains
@@ -136,9 +140,9 @@ class OptimizationProfiles:
                     continue
                 path = executable.get("path")
                 if isinstance(path, str) and path:
-                    executable_paths.add(_normalize_text(path))
+                    executable_paths.add(_normalize_path_text(path))
         if process_path:
-            executable_paths.add(_normalize_text(process_path))
+            executable_paths.add(_normalize_path_text(process_path))
 
         providers = {_normalize_text(game.source)}
         if isinstance(game.metadata, dict):

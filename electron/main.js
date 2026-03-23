@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
@@ -8,6 +8,10 @@ const BACKEND_PORT = 8765;
 const BACKEND_BASE_URL = `http://${BACKEND_HOST}:${BACKEND_PORT}`;
 
 let backendProcess = null;
+let mainWindow = null;
+let tray = null;
+let isQuitting = false;
+let trayTipShown = false;
 
 function backendCommand() {
   return process.env.GO_BACKEND_PYTHON || 'python';
@@ -102,7 +106,7 @@ function waitForBackend({
 }
 
 async function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 1000,
@@ -115,7 +119,71 @@ async function createWindow() {
     },
   });
 
-  await win.loadFile(path.join(__dirname, 'index.html'));
+  mainWindow.on('close', (event) => {
+    if (isQuitting) {
+      return;
+    }
+
+    event.preventDefault();
+    mainWindow.hide();
+
+    if (process.platform === 'win32' && tray && !trayTipShown) {
+      trayTipShown = true;
+      tray.displayBalloon({
+        iconType: 'info',
+        title: 'Game Optimizer',
+        content: 'Sigue optimizando en segundo plano. Hace clic en el icono para volver a abrir.',
+      });
+    }
+  });
+
+  await mainWindow.loadFile(path.join(__dirname, 'index.html'));
+}
+
+function showMainWindow() {
+  if (!mainWindow) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTrayIcon() {
+  const iconDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAIUlEQVR4AWOgHviPCQMTw38qMBoM8h9MwxAcmMCS0QAAtDYQW4BLW6YAAAAASUVORK5CYII=';
+  const icon = nativeImage.createFromDataURL(iconDataUrl);
+  icon.setTemplateImage(true);
+  return icon;
+}
+
+function createTray() {
+  if (tray) {
+    return;
+  }
+
+  tray = new Tray(createTrayIcon());
+  tray.setToolTip('Game Optimizer');
+
+  const trayMenu = Menu.buildFromTemplate([
+    {
+      label: 'Abrir',
+      click: showMainWindow,
+    },
+    {
+      label: 'Salir',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(trayMenu);
+  tray.on('double-click', showMainWindow);
 }
 
 app.whenReady().then(async () => {
@@ -127,21 +195,26 @@ app.whenReady().then(async () => {
     console.error(error);
   }
 
+  createTray();
   await createWindow();
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow();
+      return;
     }
+
+    showMainWindow();
   });
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  if (isQuitting && process.platform !== 'darwin') {
     app.quit();
   }
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
   stopBackend();
 });

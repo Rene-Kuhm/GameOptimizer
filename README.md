@@ -60,6 +60,13 @@ npm start
 
 Electron `main.js` starts the backend automatically with Uvicorn at `http://127.0.0.1:8765`.
 
+## Tray / background mode (Windows)
+
+- Closing the window with the `X` now hides the app to the system tray instead of quitting.
+- While hidden, the backend keeps running so automatic optimization continues in background.
+- Tray menu includes `Abrir` (show/focus window) and `Salir` (quit app completely).
+- On first minimize to tray, Windows shows a one-time balloon tip explaining background mode.
+
 ## Troubleshooting / recent hotfix
 
 - If installation fails on `pywin32==306`, use the current pinned selector in `backend/requirements.txt`: `pywin32>=311; platform_system == "Windows"`.

@@ -14,8 +14,47 @@ let tray = null;
 let isQuitting = false;
 let trayTipShown = false;
 
+function getEmbeddedPythonPath() {
+  if (!app.isPackaged) {
+    return null;
+  }
+
+  const resourcesPythonDir = path.join(process.resourcesPath, 'python');
+  const pythonExePath = path.join(resourcesPythonDir, 'python.exe');
+
+  if (fs.existsSync(pythonExePath)) {
+    return pythonExePath;
+  }
+
+  return null;
+}
+
+function findPython() {
+  if (app.isPackaged) {
+    const embeddedPython = getEmbeddedPythonPath();
+    if (embeddedPython) {
+      return embeddedPython;
+    }
+
+    console.error('[Python] Embedded Python not found in resources/python/');
+    console.error('[Python] Please ensure the installer was built with Python embeddable.');
+    return null;
+  }
+
+  if (process.env.GO_BACKEND_PYTHON) {
+    return process.env.GO_BACKEND_PYTHON;
+  }
+
+  const venvPython = path.resolve(__dirname, '..', '.venv', 'Scripts', 'python.exe');
+  if (fs.existsSync(venvPython)) {
+    return venvPython;
+  }
+
+  return 'python';
+}
+
 function backendCommand() {
-  return process.env.GO_BACKEND_PYTHON || 'python';
+  return findPython();
 }
 
 function resolveBackendDir() {
@@ -38,10 +77,16 @@ function startBackend() {
     return;
   }
 
+  const pythonPath = findPython();
+  if (!pythonPath) {
+    console.error('[backend] Could not find Python. Please install Python or use embedded version.');
+    return;
+  }
+
   const backendDir = resolveBackendDir();
   const args = ['-m', 'uvicorn', 'app.main:app', '--host', BACKEND_HOST, '--port', String(BACKEND_PORT)];
 
-  backendProcess = spawn(backendCommand(), args, {
+  backendProcess = spawn(pythonPath, args, {
     cwd: backendDir,
     windowsHide: true,
     stdio: 'pipe',

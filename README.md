@@ -148,9 +148,13 @@ The same workflow can also be started manually with `workflow_dispatch`.
 ### Runtime prerequisites on destination machine
 
 - Windows 10/11 x64
-- Python 3.10+ available in `PATH` (or configure `GO_BACKEND_PYTHON` to point to your Python executable)
 
-The packaged app includes `backend/app` and `backend/config` resources. Python itself is not bundled.
+The packaged app includes:
+
+- `python-embeddable/`: Python 3.11.9 (embeddable) - no installation required
+- `backend/app` and `backend/config` resources
+
+The installer bundles a self-contained Python runtime, so users do NOT need to install Python separately.
 
 ### Where to download
 

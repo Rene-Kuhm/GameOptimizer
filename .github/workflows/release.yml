@@ -28,10 +28,32 @@ jobs:
           node-version: "20"
           cache: "npm"
 
-      - name: Setup Python
+      - name: Setup Python (for build/dev)
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Cache Python embeddable
+        id: cache-python-embed
+        uses: actions/cache@v4
+        with:
+          path: python-embeddable
+          key: python-embeddable-3.11.9-amd64
+
+      - name: Download Python embeddable if not cached
+        if: steps.cache-python-embed.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+          Invoke-WebRequest -Uri $url -OutFile python-embeddable.zip
+          Expand-Archive -Path python-embeddable.zip -DestinationPath python-embeddable
+          Remove-Item python-embeddable.zip
+
+      - name: Install pip for embedded Python
+        shell: pwsh
+        run: |
+          $pythonExe = Get-ChildItem -Path python-embeddable -Filter python*.exe | Select-Object -First 1
+          & $pythonExe.FullName -m ensurepip --upgrade
 
       - name: Install Node dependencies
         run: npm ci

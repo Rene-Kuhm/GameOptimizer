@@ -27,7 +27,18 @@
       "electron/**/*",
       "package.json"
     ],
+    "python-embeddable": {
+      "url": "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip",
+      "sha256": "6daedd51e8c2eaf9e0fcf8a1e4c6f4b8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8"
+    },
     "extraResources": [
+      {
+        "from": "python-embeddable",
+        "to": "python",
+        "filter": [
+          "**/*"
+        ]
+      },
       {
         "from": "backend",
         "to": "backend",

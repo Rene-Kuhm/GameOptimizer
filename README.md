@@ -132,7 +132,29 @@ GitHub Actions runs lightweight checks on push and PR:
 - Node syntax check (`electron/main.js`)
 - Node syntax check (`electron/renderer.js`)
 
-No build step runs in CI by default.
+## Release installer (.exe)
+
+Windows installers are generated in CI from `.github/workflows/release.yml`.
+
+### How release is generated
+
+1. Create and push a semantic version tag (example: `v0.3.0`).
+2. GitHub Actions `Release Windows Installer` runs on `windows-latest`.
+3. CI installs Node + Python dependencies, runs syntax checks, and builds installers with `npm run dist:win`.
+4. Generated `.exe` files are published as assets in GitHub Releases.
+
+The same workflow can also be started manually with `workflow_dispatch`.
+
+### Runtime prerequisites on destination machine
+
+- Windows 10/11 x64
+- Python 3.10+ available in `PATH` (or configure `GO_BACKEND_PYTHON` to point to your Python executable)
+
+The packaged app includes `backend/app` and `backend/config` resources. Python itself is not bundled.
+
+### Where to download
+
+Download installer artifacts from the repository **Releases** page (assets attached to each version tag).
 
 ## Tray / background mode (Windows)
 

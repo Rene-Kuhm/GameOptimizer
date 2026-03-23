@@ -1,5 +1,6 @@
 const { app, BrowserWindow, Menu, Tray, nativeImage } = require('electron');
 const { spawn } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
@@ -17,12 +18,27 @@ function backendCommand() {
   return process.env.GO_BACKEND_PYTHON || 'python';
 }
 
+function resolveBackendDir() {
+  const devBackendDir = path.resolve(__dirname, '..', 'backend');
+  const packagedBackendDir = path.join(process.resourcesPath, 'backend');
+
+  if (app.isPackaged) {
+    return packagedBackendDir;
+  }
+
+  if (fs.existsSync(devBackendDir)) {
+    return devBackendDir;
+  }
+
+  return packagedBackendDir;
+}
+
 function startBackend() {
   if (backendProcess) {
     return;
   }
 
-  const backendDir = path.resolve(__dirname, '..', 'backend');
+  const backendDir = resolveBackendDir();
   const args = ['-m', 'uvicorn', 'app.main:app', '--host', BACKEND_HOST, '--port', String(BACKEND_PORT)];
 
   backendProcess = spawn(backendCommand(), args, {

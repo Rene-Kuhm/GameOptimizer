@@ -1,0 +1,74 @@
+name: Release Windows Installer
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish (example: v0.3.0)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Validate syntax checks
+        run: |
+          node --check electron/main.js
+          node --check electron/renderer.js
+          python -m py_compile backend/app/*.py
+
+      - name: Build Windows installers
+        run: npm run dist:win
+
+      - name: Resolve release tag
+        id: resolve_tag
+        shell: pwsh
+        run: |
+          $tagInput = "${{ github.event.inputs.tag }}"
+          if ([string]::IsNullOrWhiteSpace($tagInput)) {
+            $tagInput = "${{ github.ref_name }}"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($tagInput)) {
+            throw "Tag is required. Provide workflow_dispatch input 'tag' or run from a v* tag push."
+          }
+
+          "tag=$tagInput" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.resolve_tag.outputs.tag }}
+          files: |
+            release/*.exe
+          fail_on_unmatched_files: true

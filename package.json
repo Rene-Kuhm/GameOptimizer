@@ -1,12 +1,13 @@
 {
   "name": "game-optimizer",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Windows Game Optimizer desktop app with Electron and FastAPI backend",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron electron/main.js",
     "start:dev": "electron electron/main.js",
-    "backend:syntax": "python -m py_compile backend/app/*.py"
+    "backend:syntax": "python -m py_compile backend/app/*.py",
+    "dist:win": "electron-builder --win nsis portable"
   },
   "keywords": [
     "electron",
@@ -16,7 +17,53 @@
   ],
   "author": "",
   "license": "MIT",
+  "build": {
+    "appId": "com.gameoptimizer.app",
+    "productName": "Game Optimizer",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "app/**/*",
+          "config/**/*",
+          "requirements.txt",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    }
+  },
   "devDependencies": {
-    "electron": "^31.7.7"
+    "electron": "^31.7.7",
+    "electron-builder": "^26.8.1"
   }
 }

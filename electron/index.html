@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Game Optimizer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid"></div>
+    <main class="layout">
+      <header class="hero">
+        <h1>Game Optimizer</h1>
+        <p>Realtime system telemetry and game optimization control.</p>
+        <div class="status-row">
+          <span id="connectionDot" class="dot disconnected"></span>
+          <span id="connectionText">Connecting...</span>
+        </div>
+      </header>
+
+      <section class="metrics-grid">
+        <article class="card metric-card">
+          <h2>CPU</h2>
+          <div id="cpuValue" class="metric-value">--%</div>
+          <p>Logical Cores: <span id="cpuLogical">--</span></p>
+        </article>
+
+        <article class="card metric-card">
+          <h2>GPU</h2>
+          <div id="gpuValue" class="metric-value">--</div>
+          <p id="gpuDriver">Driver: --</p>
+        </article>
+
+        <article class="card metric-card">
+          <h2>RAM</h2>
+          <div id="ramValue" class="metric-value">--%</div>
+          <p id="ramDetail">-- / --</p>
+        </article>
+      </section>
+
+      <section class="main-grid">
+        <article class="card panel hardware-panel">
+          <div class="panel-title">
+            <h2>Hardware Summary</h2>
+          </div>
+          <ul id="hardwareList" class="detail-list"></ul>
+        </article>
+
+        <article class="card panel games-panel">
+          <div class="panel-title">
+            <h2>Discovered Games</h2>
+            <span id="gamesCount" class="pill">0</span>
+          </div>
+          <div id="gamesList" class="games-list"></div>
+        </article>
+
+        <article class="card panel watcher-panel">
+          <div class="panel-title">
+            <h2>Watcher Status</h2>
+          </div>
+          <div class="watcher-row"><span>Running:</span> <strong id="watcherRunning">--</strong></div>
+          <div class="watcher-row"><span>Active Games:</span> <strong id="watcherActive">--</strong></div>
+          <div class="watcher-row"><span>Last Event:</span> <strong id="watcherLastEvent">--</strong></div>
+          <div class="watcher-row"><span>Last Game:</span> <strong id="watcherLastGame">--</strong></div>
+        </article>
+
+        <article class="card panel optimize-panel">
+          <div class="panel-title">
+            <h2>Manual Optimization</h2>
+          </div>
+          <form id="optimizeForm">
+            <label for="processName">Process Name</label>
+            <input id="processName" placeholder="examplegame.exe" required />
+
+            <label for="profileSelect">Profile</label>
+            <select id="profileSelect">
+              <option value="default">Default (High + tame background)</option>
+              <option value="safe">Safe (normal priority only)</option>
+            </select>
+
+            <button type="submit">Apply Profile</button>
+          </form>
+          <pre id="optimizeResult" class="result-box">Waiting for action...</pre>
+        </article>
+      </section>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

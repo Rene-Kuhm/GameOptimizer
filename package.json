@@ -1,0 +1,22 @@
+{
+  "name": "game-optimizer",
+  "version": "0.1.0",
+  "description": "Windows Game Optimizer desktop app with Electron and FastAPI backend",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron electron/main.js",
+    "start:dev": "electron electron/main.js",
+    "backend:syntax": "python -m py_compile backend/app/*.py"
+  },
+  "keywords": [
+    "electron",
+    "fastapi",
+    "windows",
+    "optimizer"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.7.7"
+  }
+}

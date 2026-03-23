@@ -1,0 +1,5 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+psutil==6.0.0
+WMI==1.5.1
+pywin32==306

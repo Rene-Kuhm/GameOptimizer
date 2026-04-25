@@ -1,52 +1,89 @@
-# Game Optimizer (Electron + FastAPI)
+# Game Optimizer
 
-Game Optimizer is a Windows-first desktop app focused on practical game-session optimization:
+Windows-first desktop app for safer, reversible game-session optimization.
 
-- Electron desktop UI
-- FastAPI local backend API + WebSocket streaming
-- Best-effort game discovery and watcher-based optimization
-- Telemetry provider chain for NVIDIA, AMD, Intel, and Windows fallbacks
+Game Optimizer combines an Electron tray UI with a local FastAPI backend. It discovers installed games, watches running processes, streams hardware telemetry, applies per-game optimization profiles, and rolls changes back when the session ends.
 
-## Production usage guidance
+> Goal: improve gaming-session conditions without turning the machine into a mystery box. Every optimization is best-effort, bounded, and designed to fail safely.
 
-This app is intended to run locally on Windows desktop systems. For day-to-day usage:
+## Highlights
 
-1. Use the default profile first.
-2. Add per-game overrides only when you can validate behavior on your machine.
-3. Prefer small, measurable tuning changes over aggressive global tuning.
-4. Keep telemetry and optimization logs enabled (default) while validating new profiles.
+- Desktop UI with Windows system tray behavior.
+- Local FastAPI API plus WebSocket metrics stream.
+- Game discovery for common launchers and filesystem roots.
+- Runtime watcher that handles launcher child processes and ignores overlays/anti-cheats.
+- Multi-provider GPU telemetry chain for NVIDIA, AMD, Intel, WMI, PDH, and safe fallbacks.
+- Dual-GPU friendly adapter reporting for laptop setups such as Intel + NVIDIA.
+- Reversible optimization sessions with rollback on normal stop, crash-like exits, or watcher shutdown.
+- Per-game optimization profiles with optional CPU affinity tuning.
+- Windows CI test coverage for backend edge cases.
 
-## Folder structure
+## Architecture
 
 ```text
 GameOptimizer/
-  electron/
+  electron/                 Electron shell, tray, renderer UI
   backend/
-    app/
-    config/
-    tests/
-  .github/workflows/
+    app/                    FastAPI app, watcher, optimizer, telemetry, discovery
+    config/profiles.json    Default and per-game optimization profiles
+    tests/                  Pytest suite for discovery, telemetry, watcher, rollback
+  scripts/run-python.js     Cross-platform Python launcher for npm scripts
+  .github/workflows/        CI and Windows release workflows
 ```
 
-## Prerequisites (Windows)
+### Runtime flow
 
-- Python 3.10+
-- Node.js 18+
+```text
+Electron UI
+  ├─ starts local FastAPI backend
+  ├─ subscribes to WS /ws/metrics
+  └─ displays telemetry, watcher status, diagnostics
+
+FastAPI backend
+  ├─ discovers games
+  ├─ watches process table
+  ├─ matches game processes, including launcher children
+  ├─ applies selected optimization profile
+  ├─ stores reversible state
+  └─ rolls back on game exit or watcher shutdown
+```
+
+## Requirements
+
+### For development
+
+- Windows 10/11 recommended for full behavior.
+- Python 3.10+.
+- Node.js 18+.
+- npm.
+
+macOS/Linux can run syntax checks and most tests because Windows-only imports are guarded, but real optimization behavior must be validated on Windows.
+
+### For packaged usage
+
+- Windows 10/11 x64.
+- No separate Python install should be required by the packaged app.
 
 ## Setup
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r backend/requirements.txt
+npm install
+
+python3 -m venv .venv
+.venv\Scripts\activate   # Windows PowerShell/CMD equivalent
+pip install -r backend/requirements-dev.txt
+```
+
+On macOS/Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements-dev.txt
 npm install
 ```
 
-Optional test dependencies:
-
-```bash
-pip install -r backend/requirements-dev.txt
-```
+`backend/requirements.txt` keeps Windows-only dependencies behind platform markers, so non-Windows installs do not try to install `pywin32`, `WMI`, or NVIDIA bindings.
 
 ## Run locally
 
@@ -54,121 +91,74 @@ pip install -r backend/requirements-dev.txt
 npm start
 ```
 
-Electron `electron/main.js` starts backend Uvicorn at `http://127.0.0.1:8765`.
+Electron starts the backend at:
+
+```text
+http://127.0.0.1:8765
+```
+
+## Scripts
+
+```bash
+npm run backend:syntax  # Python syntax check for backend/app/*.py
+npm test                # pytest backend/tests
+npm run dist:win        # Windows installer/portable build; do this only on release flow
+```
+
+The npm Python scripts use `scripts/run-python.js`, which prefers the project `.venv`, then falls back to `python3`, then `python`. This avoids the classic `python: command not found` issue across developer machines.
 
 ## Runtime configuration
 
-Copy `.env.example` values into your shell/session as needed:
+All variables are optional.
 
-- `GAME_OPTIMIZER_LOG_LEVEL` (default: `INFO`)
-- `GAME_OPTIMIZER_POLL_INTERVAL_SECONDS` (default: `3`)
-- `GAME_OPTIMIZER_GAME_PATHS` (optional scan roots, `;` separated)
-- `GAME_OPTIMIZER_TELEMETRY_PROVIDER` (optional preferred provider)
-- `GAME_OPTIMIZER_PROFILES_PATH` (optional custom profiles JSON path)
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `GAME_OPTIMIZER_LOG_LEVEL` | `INFO` | Backend log level. |
+| `GAME_OPTIMIZER_POLL_INTERVAL_SECONDS` | `3` | Watcher process scan interval. |
+| `GAME_OPTIMIZER_OPTIMIZATION_DELAY_SECONDS` | `0` | Delay before applying optimization after a game is detected. Useful for launcher handoff/loading. |
+| `GAME_OPTIMIZER_GAME_PATHS` | empty | Extra game scan roots, separated by `;`. |
+| `GAME_OPTIMIZER_TELEMETRY_PROVIDER` | auto | Preferred telemetry provider. |
+| `GAME_OPTIMIZER_PROFILES_PATH` | bundled config | Custom profiles JSON path. |
 
-All variables are optional; defaults are safe when not set.
+## Optimization profiles
 
-## Optimization profile system
+Profiles live in:
 
-Profiles are defined in `backend/config/profiles.json`.
+```text
+backend/config/profiles.json
+```
 
-### Defaults
+Built-in profiles:
 
-- `default`: game process to `high`, selected background apps to `below_normal`
-- `safe`: game process to `normal`, no background priority changes
+- `default`: raises the game process priority and lowers selected safe background processes.
+- `safe`: avoids aggressive process changes.
 
-### Per-game overrides
+Per-game overrides can match by:
 
-Overrides can match by:
+- executable name,
+- executable path fragment,
+- discovery provider.
 
-- executable name
-- executable path contains
-- discovery provider
+Overrides may either switch profile or patch settings inline.
 
-Each override can either:
+CPU affinity tuning is optional. It is only applied when explicitly configured with a valid, non-empty CPU list.
 
-- switch to another profile (`profile`), and/or
-- patch settings inline (`settings`)
+## Game discovery and watcher behavior
 
-CPU affinity is optional and only applied when explicitly configured with a valid non-empty CPU list.
+The watcher scans running processes and compares them against discovered game entries using executable name, path, metadata, and confidence scoring.
 
-## Rollback behavior
+It now handles common real-world launcher behavior:
 
-When the watcher applies changes for a detected game session, it stores reversible state and attempts rollback on game stop:
+- ignores known launchers, overlays, and anti-cheat helper processes,
+- tracks parent process names,
+- boosts confidence for likely game child processes started by launchers,
+- supports a configurable optimization delay before applying changes.
 
-- restore original process priority when changed
-- restore original CPU affinity when changed
-- skip gracefully if process no longer exists
-
-Rollback is idempotent and result details are included in watcher events.
-
-## Safety model and limitations
-
-- Optimization actions are best-effort and do not crash backend on per-process failures.
-- Some process operations require Administrator rights.
-- Telemetry and discovery are best-effort and depend on local permissions, drivers, and launcher metadata quality.
-- Optional affinity tuning is bounded and validated to avoid invalid CPU masks.
-
-## API endpoints
-
-- `GET /health`
-- `GET /system/metrics`
-- `GET /hardware`
-- `GET /games`
-- `POST /optimize/apply`
-- `WS /ws/metrics`
-
-`/health` includes additive diagnostics fields:
-
-- active telemetry source/confidence
-- watcher summary
-- last optimization action status
-
-## CI status
-
-GitHub Actions runs lightweight checks on push and PR:
-
-- Python syntax compile (`backend/app/*.py`)
-- Node syntax check (`electron/main.js`)
-- Node syntax check (`electron/renderer.js`)
-
-## Release installer (.exe)
-
-Windows installers are generated in CI from `.github/workflows/release.yml`.
-
-### How release is generated
-
-1. Create and push a semantic version tag (example: `v0.3.0`).
-2. GitHub Actions `Release Windows Installer` runs on `windows-latest`.
-3. CI installs Node + Python dependencies, runs syntax checks, and builds installers with `npm run dist:win`.
-4. Generated `.exe` files are published as assets in GitHub Releases.
-
-The same workflow can also be started manually with `workflow_dispatch`.
-
-### Runtime prerequisites on destination machine
-
-- Windows 10/11 x64
-
-The packaged app includes:
-
-- `python-embeddable/`: Python 3.11.9 (embeddable) - no installation required
-- `backend/app` and `backend/config` resources
-
-The installer bundles a self-contained Python runtime, so users do NOT need to install Python separately.
-
-### Where to download
-
-Download installer artifacts from the repository **Releases** page (assets attached to each version tag).
-
-## Tray / background mode (Windows)
-
-- Closing with `X` hides app to system tray.
-- Backend keeps running while app is hidden.
-- Tray menu supports open and full quit.
+This matters because Steam, Epic, GOG, EA, Battle.net, and Ubisoft often launch a helper first, then the real game process after a short delay. Optimizing the helper is the wrong target; optimizing too early is fragile. The watcher avoids both when possible.
 
 ## Telemetry provider chain
 
-Current source order is vendor-native first, then safe fallbacks:
+Provider selection is vendor-native first, fallback second:
 
 1. `nvml`
 2. `amd`
@@ -178,30 +168,142 @@ Current source order is vendor-native first, then safe fallbacks:
 6. `pdh`
 7. `fallback`
 
-Use `GAME_OPTIMIZER_TELEMETRY_PROVIDER` to prefer one provider at runtime.
+`GAME_OPTIMIZER_TELEMETRY_PROVIDER` can request a preferred provider, but availability still depends on drivers, permissions, OS support, and hardware.
 
-## GPU diagnostics (`n/a` utilization)
+### Dual-GPU laptops
 
-`GET /system/metrics` now includes additive `gpu_diagnostics` data:
+On systems such as Intel iGPU + NVIDIA dGPU, a native provider may report the active dedicated GPU while Windows WMI can still see additional adapters. Game Optimizer keeps native telemetry as the primary source but appends missing WMI adapter metadata, so diagnostics show the full GPU picture instead of hiding the integrated adapter.
 
-- `status`: `ok`, `no_sample`, `metadata_only`, or `provider_unavailable`
-- `reason`: short user-facing reason for why utilization is numeric or `n/a`
-- `source_note`: provider-specific technical note
-- `provider_notes[]`: probe chain notes used to select/fallback providers
-- `sample_state`: sample quality marker (for UI detail panels)
+## GPU diagnostics
+
+`GET /system/metrics` includes `gpu_diagnostics`:
+
+- `status`: `ok`, `no_sample`, `metadata_only`, or `provider_unavailable`.
+- `reason`: user-facing explanation for numeric utilization or `n/a`.
+- `source_note`: provider-specific technical note.
+- `provider_notes[]`: probe chain notes.
+- `sample_state`: sample quality marker for UI detail panels.
 
 When utilization is `n/a`, common causes are:
 
-- no active 3D engine sample in the current WMI window
-- fallback provider returning metadata only
-- telemetry provider not available on the host
+- no active 3D engine sample during the current WMI window,
+- fallback provider returning metadata only,
+- telemetry provider unavailable on the host.
 
-### Copy diagnostics for bug reports
+The Electron UI can copy a sanitized diagnostics payload for bug reports.
 
-In the Electron UI, open the GPU card and click `Copy diagnostics` inside the Diagnostics panel.
-This copies a sanitized JSON snapshot (timestamp, app version, GPU source/confidence, `gpu_diagnostics`, first GPU summary, watcher status, and OS/machine/processor) so you can paste it into GitHub issues.
+## Rollback and safety model
 
-## Contributing and policies
+Game Optimizer stores reversible state for each optimization session.
+
+Rollback attempts to restore:
+
+- original process priority,
+- original CPU affinity when it was captured,
+- tracked session state when the watcher stops.
+
+Rollback is intentionally idempotent. If a process is already gone, the backend records a skipped action instead of crashing. If previous affinity was unavailable, rollback records `missing_previous_affinity` rather than applying an invalid empty mask.
+
+Important limitations:
+
+- Some operations require Administrator rights.
+- Windows process telemetry is permission- and driver-dependent.
+- PID reuse is always a risk in process tools; validation on real Windows machines is required before aggressive tuning.
+- Optimization is best-effort, not a guaranteed FPS boost.
+
+## API
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/health` | Backend health, watcher summary, telemetry diagnostics. |
+| `GET` | `/system/metrics` | Current system and GPU metrics. |
+| `GET` | `/hardware` | Hardware summary. |
+| `GET` | `/games` | Discovered games. |
+| `POST` | `/optimize/apply` | Manual optimization apply request. |
+| `WS` | `/ws/metrics` | Live metrics and watcher events. |
+
+## Testing
+
+```bash
+npm test
+```
+
+Current backend tests cover:
+
+- import compatibility on non-Windows hosts,
+- GPU provider selection and WMI adapter merge behavior,
+- launcher/overlay ignore lists,
+- watcher matching and optimization delay,
+- rollback behavior for CPU affinity and process failures,
+- profile loading.
+
+## CI
+
+GitHub Actions runs:
+
+- lightweight syntax checks on Ubuntu,
+- backend pytest suite on `windows-latest`.
+
+The Windows runner is important because several runtime paths depend on Windows-only APIs and package markers.
+
+## Release installer
+
+Windows release assets are generated by `.github/workflows/release.yml`.
+
+Release flow:
+
+1. Create and push a semantic version tag, for example `v0.3.0`.
+2. GitHub Actions runs the Windows release workflow.
+3. The workflow installs Node and Python dependencies, runs checks, and executes `npm run dist:win`.
+4. Generated installer/portable `.exe` assets are attached to the GitHub Release.
+
+The workflow can also be started manually with `workflow_dispatch`.
+
+## Tray/background behavior
+
+- Closing the window with `X` hides the app to the system tray.
+- The backend keeps running while hidden.
+- Tray menu supports reopening the window and fully quitting the app.
+
+## Troubleshooting
+
+### `python: command not found`
+
+Use the npm scripts. They go through `scripts/run-python.js` and prefer `.venv` automatically.
+
+```bash
+npm run backend:syntax
+npm test
+```
+
+### `pytest` is missing
+
+Install dev dependencies into the project venv:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # macOS/Linux
+pip install -r backend/requirements-dev.txt
+```
+
+On Windows, activate with your shell's `.venv\Scripts\activate` command.
+
+### GPU utilization shows `n/a`
+
+Open the GPU diagnostics panel and copy diagnostics. `n/a` usually means the active provider only has metadata, no current utilization sample, or the required driver/API is unavailable.
+
+## Contributing
+
+Before opening a PR:
+
+```bash
+npm run backend:syntax
+npm test
+node --check electron/main.js
+node --check electron/renderer.js
+```
+
+Useful project docs:
 
 - `CONTRIBUTING.md`
 - `SECURITY.md`

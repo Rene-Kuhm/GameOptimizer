@@ -1,7 +1,7 @@
 # Graph Report - /Volumes/Programacion/GameOptimizer  (2026-04-25)
 
 ## Corpus Check
-- 21 files · ~34,642 words
+- 21 files · ~35,404 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary

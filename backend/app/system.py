@@ -183,7 +183,10 @@ def _has_native_amd_lib() -> bool:
 
     for dll_name in ["atiadlxx.dll", "atiadlxy.dll"]:
         try:
-            ctypes.WinDLL(dll_name)
+            win_dll = getattr(ctypes, "WinDLL", None)
+            if win_dll is None:
+                return False
+            win_dll(dll_name)
             return True
         except Exception:
             continue
@@ -192,9 +195,12 @@ def _has_native_amd_lib() -> bool:
 
 
 def _load_amd_adl_library() -> tuple[Any | None, str]:
+    win_dll = getattr(ctypes, "WinDLL", None)
+    if win_dll is None:
+        return None, ""
     for dll_name in ["atiadlxx.dll", "atiadlxy.dll"]:
         try:
-            return ctypes.WinDLL(dll_name), dll_name
+            return win_dll(dll_name), dll_name
         except Exception:
             continue
     return None, ""
@@ -207,7 +213,10 @@ def _has_native_intel_lib() -> bool:
 
     for dll_name in ["igdml64.dll", "igdml32.dll"]:
         try:
-            ctypes.WinDLL(dll_name)
+            win_dll = getattr(ctypes, "WinDLL", None)
+            if win_dll is None:
+                return False
+            win_dll(dll_name)
             return True
         except Exception:
             continue
@@ -377,6 +386,46 @@ class NvidiaNvmlProvider:
                 pass
 
 
+def _static_adapter_payload(gpu: Any) -> dict[str, Any]:
+    name = getattr(gpu, "Name", "Unknown GPU")
+    vendor = _gpu_vendor(str(name))
+    payload = {
+        "name": name,
+        "driver_version": getattr(gpu, "DriverVersion", None),
+        "adapter_ram": int(getattr(gpu, "AdapterRAM", 0) or 0),
+        "current_refresh_rate": getattr(gpu, "CurrentRefreshRate", None),
+        "utilization_percent": None,
+        "memory_used": None,
+        "memory_total": int(getattr(gpu, "AdapterRAM", 0) or 0) or None,
+        "vendor": vendor,
+        "telemetry_backend": _telemetry_backend(
+            "wmi_video_controller",
+            note="Fallback adapter metadata only.",
+        ),
+    }
+    stub = _collect_vendor_gpu_stub(vendor)
+    if stub:
+        payload["telemetry_backend"]["native_hook"] = stub
+    return payload
+
+
+def _append_missing_wmi_adapters(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep native telemetry but still expose extra adapters in dual-GPU laptops."""
+    if not items:
+        return items
+
+    existing_names = {_normalize_gpu_name(str(item.get("name", ""))) for item in items}
+    merged = list(items)
+    for gpu in _wmi_video_controllers():
+        name = str(getattr(gpu, "Name", "") or "")
+        normalized = _normalize_gpu_name(name)
+        if not normalized or normalized in existing_names:
+            continue
+        merged.append(_static_adapter_payload(gpu))
+        existing_names.add(normalized)
+    return merged
+
+
 def _record_get(data: Any, *keys: str) -> Any:
     if isinstance(data, dict):
         for key in keys:
@@ -499,7 +548,7 @@ class _ADLPMActivity(ctypes.Structure):
 
 
 _ADL_ALLOCATIONS: list[Any] = []
-_ADL_MAIN_MALLOC_CALLBACK = ctypes.WINFUNCTYPE(ctypes.c_void_p, ctypes.c_int)
+_ADL_MAIN_MALLOC_CALLBACK = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)(ctypes.c_void_p, ctypes.c_int)
 
 
 def _adl_malloc(size: int) -> int:
@@ -985,9 +1034,10 @@ def _select_gpu_telemetry() -> tuple[str, float, str, list[dict[str, Any]], list
         result = provider.collect()
         if result.items:
             confidence, confidence_reason = _confidence_for_source(provider.source)
+            result_items = _append_missing_wmi_adapters(result.items)
             reason = f"{confidence_reason} {result.reason}"
             source_note = f"{provider.source}: {result.reason}"
-            return provider.source, confidence, reason, result.items, notes + [source_note], source_note
+            return provider.source, confidence, reason, result_items, notes + [source_note], source_note
 
         notes.append(f"{provider.source}: {result.reason}")
 

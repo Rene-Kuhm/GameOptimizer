@@ -6,7 +6,8 @@
   "scripts": {
     "start": "electron electron/main.js",
     "start:dev": "electron electron/main.js",
-    "backend:syntax": "python -m py_compile backend/app/*.py",
+    "backend:syntax": "node scripts/run-python.js -m py_compile backend/app/*.py",
+    "test": "node scripts/run-python.js -m pytest backend/tests",
     "dist:win": "electron-builder --win nsis portable --publish never"
   },
   "keywords": [

@@ -2,6 +2,6 @@ fastapi==0.115.0
 uvicorn==0.30.6
 websockets==12.0
 psutil==6.0.0
-WMI==1.5.1
+WMI==1.5.1; platform_system == "Windows"
 pywin32>=311; platform_system == "Windows"
 nvidia-ml-py>=12.560.30; platform_system == "Windows"

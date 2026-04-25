@@ -7,22 +7,29 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 
-import winreg
+try:  # pragma: no cover - import behavior differs by platform
+    import winreg
+except Exception:  # pragma: no cover - non-Windows compatibility
+    winreg = None
 
 from .executable_meta import get_executable_metadata_cache
 from .models import GameEntry
 
 
-REGISTRY_LOCATIONS = [
-    (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
-    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
-]
+if winreg is not None:
+    REGISTRY_LOCATIONS = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+    ]
 
-UNINSTALL_KEYS = [
-    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-    (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
-    (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
-]
+    UNINSTALL_KEYS = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+else:
+    REGISTRY_LOCATIONS = []
+    UNINSTALL_KEYS = []
 
 SKIP_EXE_TOKENS = {
     "unins",
@@ -34,9 +41,29 @@ SKIP_EXE_TOKENS = {
     "vc_redist",
     "helper",
     "service",
+    "anticheat",
+    "easyanticheat",
     "eadesktop",
     "ubisoftconnect",
     "battle.net",
+}
+
+KNOWN_IGNORED_PROCESS_NAMES = {
+    "steam.exe",
+    "steamwebhelper.exe",
+    "epicgameslauncher.exe",
+    "gog galaxy.exe",
+    "galaxyclient.exe",
+    "eadesktop.exe",
+    "origin.exe",
+    "ubisoftconnect.exe",
+    "battle.net.exe",
+    "discordoverlay.exe",
+    "gamebar.exe",
+    "gamebarpresencewriter.exe",
+    "easyanticheat.exe",
+    "easyanticheat_eos.exe",
+    "beservice.exe",
 }
 
 DEFAULT_GENERIC_ROOTS = [
@@ -56,6 +83,8 @@ XBOX_ROOTS = [
 
 
 def _read_reg_value(root: int, subkey: str, value_name: str) -> str | None:
+    if winreg is None:
+        return None
     try:
         with winreg.OpenKey(root, subkey) as key:
             value, _ = winreg.QueryValueEx(key, value_name)
@@ -209,11 +238,13 @@ def _epic_manifest_paths() -> Iterable[Path]:
         / "Manifests"
     ]
 
-    reg_hint = _read_reg_value(
-        winreg.HKEY_LOCAL_MACHINE,
-        r"SOFTWARE\Epic Games\EpicGamesLauncher",
-        "AppDataPath",
-    )
+    reg_hint = None
+    if winreg is not None:
+        reg_hint = _read_reg_value(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Epic Games\EpicGamesLauncher",
+            "AppDataPath",
+        )
     if reg_hint:
         roots.append(Path(reg_hint) / "Data" / "Manifests")
 

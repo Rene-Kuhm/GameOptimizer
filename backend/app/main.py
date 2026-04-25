@@ -34,6 +34,18 @@ def _env_int(name: str, default: int, *, min_value: int = 1, max_value: int = 30
     return max(min_value, min(max_value, value))
 
 
+def _env_float(name: str, default: float, *, min_value: float = 0.0, max_value: float = 120.0) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        logger.warning("invalid float env var name=%s value=%s using_default=%s", name, raw, default)
+        return default
+    return max(min_value, min(max_value, value))
+
+
 class OptimizeRequest(BaseModel):
     process_name: str = Field(min_length=1, max_length=260)
     profile: str = Field(default="default", pattern="^[a-zA-Z0-9_-]{2,64}$")
@@ -72,6 +84,12 @@ class AppState:
         self.watcher = GameWatcher(
             poll_interval_seconds=_env_int("GAME_OPTIMIZER_POLL_INTERVAL_SECONDS", default=3, min_value=1, max_value=60),
             profile_resolver=self.optimization_profiles,
+            optimization_delay_seconds=_env_float(
+                "GAME_OPTIMIZER_OPTIMIZATION_DELAY_SECONDS",
+                default=0.0,
+                min_value=0.0,
+                max_value=120.0,
+            ),
         )
         self.games = []
         self.metrics_task: asyncio.Task | None = None

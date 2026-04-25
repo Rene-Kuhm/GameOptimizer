@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from typing import Any
 
 import psutil
 
+from .discovery import KNOWN_IGNORED_PROCESS_NAMES
 from .executable_meta import get_executable_metadata_cache
 from .logging_setup import get_logger
 from .models import GameEntry, WatcherEvent
@@ -77,14 +79,45 @@ class ProcessSnapshot:
     name: str
     executable_path: str | None
     metadata: dict[str, Any] | None = None
+    parent_pid: int | None = None
+    parent_name: str | None = None
+
+
+def _env_float(name: str, default: float, *, min_value: float = 0.0, max_value: float = 120.0) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        logger.warning("invalid float env var name=%s value=%s using_default=%s", name, raw, default)
+        return default
+    return max(min_value, min(max_value, value))
+
+
+def _is_ignored_process_name(name: str | None) -> bool:
+    if not name:
+        return False
+    return name.strip().lower() in KNOWN_IGNORED_PROCESS_NAMES
 
 
 class GameWatcher:
-    def __init__(self, poll_interval_seconds: int = 3, profile_resolver: OptimizationProfiles | None = None) -> None:
+    def __init__(
+        self,
+        poll_interval_seconds: int = 3,
+        profile_resolver: OptimizationProfiles | None = None,
+        optimization_delay_seconds: float | None = None,
+    ) -> None:
         self.poll_interval_seconds = poll_interval_seconds
+        self.optimization_delay_seconds = (
+            _env_float("GAME_OPTIMIZER_OPTIMIZATION_DELAY_SECONDS", default=0.0)
+            if optimization_delay_seconds is None
+            else max(0.0, optimization_delay_seconds)
+        )
         self._games: list[GameEntry] = []
         self._profiles: list[GameProfile] = []
         self._active_by_id: dict[str, ActiveGame] = {}
+        self._pending_by_id: dict[str, dict[str, Any]] = {}
         self._optimization_sessions: dict[str, dict[str, Any]] = {}
         self._profile_resolver = profile_resolver or OptimizationProfiles()
         self._metadata_cache = get_executable_metadata_cache()
@@ -143,6 +176,9 @@ class GameWatcher:
     def _match(self, process: ProcessSnapshot, profile: GameProfile) -> MatchResult:
         score = 0.0
         reasons: list[str] = []
+
+        if _is_ignored_process_name(process.name):
+            return MatchResult(matched=False, confidence=0.0, reason="ignored_process", matched_via=[])
 
         proc_name = process.name.lower()
         proc_normalized = _normalize_name(proc_name)
@@ -206,6 +242,10 @@ class GameWatcher:
                         reasons.append("sha256_match")
                         break
 
+        if score >= 0.5 and _is_ignored_process_name(process.parent_name):
+            score += 0.08
+            reasons.append("launcher_child_process")
+
         score = min(1.0, score)
         matched = score >= 0.62
         reason = "+".join(reasons) if reasons else "no_match"
@@ -214,23 +254,69 @@ class GameWatcher:
     def _iter_processes(self) -> list[ProcessSnapshot]:
         items: list[ProcessSnapshot] = []
         try:
-            process_iter = psutil.process_iter(["pid", "name", "exe"])
+            process_iter = list(psutil.process_iter(["pid", "name", "exe", "ppid"]))
         except Exception:
             return items
+
+        names_by_pid: dict[int, str] = {}
+        for proc in process_iter:
+            proc_name = (proc.info.get("name") or "").strip().lower()
+            if proc_name:
+                names_by_pid[proc.pid] = proc_name
 
         for proc in process_iter:
             proc_name = (proc.info.get("name") or "").strip().lower()
             if not proc_name:
                 continue
+            if _is_ignored_process_name(proc_name):
+                continue
             executable = proc.info.get("exe")
+            parent_pid = proc.info.get("ppid")
+            parent_pid = parent_pid if isinstance(parent_pid, int) else None
             items.append(
                 ProcessSnapshot(
                     pid=proc.pid,
                     name=proc_name,
                     executable_path=executable if isinstance(executable, str) else None,
+                    parent_pid=parent_pid,
+                    parent_name=names_by_pid.get(parent_pid) if parent_pid is not None else None,
                 )
             )
         return items
+
+    def _ready_started_games(self, scanned: dict[str, ActiveGame]) -> list[ActiveGame]:
+        now = datetime.now(timezone.utc)
+        ready: list[ActiveGame] = []
+        active_ids = set(self._active_by_id)
+
+        for game_id, game in scanned.items():
+            if game_id in active_ids:
+                self._pending_by_id.pop(game_id, None)
+                continue
+
+            pending = self._pending_by_id.get(game_id)
+            signature = (game.pid, game.process_name, game.process_exe)
+            if pending is None or pending.get("signature") != signature:
+                self._pending_by_id[game_id] = {
+                    "first_seen_at": now,
+                    "signature": signature,
+                    "game": game,
+                }
+                if self.optimization_delay_seconds > 0:
+                    continue
+                ready.append(game)
+                continue
+
+            pending["game"] = game
+            elapsed = (now - pending["first_seen_at"]).total_seconds()
+            if elapsed >= self.optimization_delay_seconds:
+                ready.append(game)
+
+        for game_id in list(self._pending_by_id):
+            if game_id not in scanned:
+                self._pending_by_id.pop(game_id, None)
+
+        return ready
 
     def _scan(self) -> dict[str, ActiveGame]:
         found: dict[str, ActiveGame] = {}
@@ -262,7 +348,7 @@ class GameWatcher:
         self.running = True
         while self.running:
             scanned = self._scan()
-            started = [item for gid, item in scanned.items() if gid not in self._active_by_id]
+            started = self._ready_started_games(scanned)
             stopped = [item for gid, item in self._active_by_id.items() if gid not in scanned]
 
             for game in started:
@@ -358,6 +444,7 @@ class GameWatcher:
                         "skipped": len(rollback_result.get("skipped", [])),
                         "failed": len(rollback_result.get("failed", [])),
                         "success": rollback_result.get("success", False),
+                        "reason": "process_exit_detected",
                     }
                     logger.info(
                         "watcher_rollback game=%s pid=%s applied=%s skipped=%s failed=%s",
@@ -392,10 +479,37 @@ class GameWatcher:
                 }
                 await event_callback(event)
 
-            self._active_by_id = scanned
+            next_active = {
+                game_id: scanned[game_id]
+                for game_id in self._active_by_id
+                if game_id in scanned
+            }
+            for game in started:
+                next_active[game.game.id] = game
+                self._pending_by_id.pop(game.game.id, None)
+            self._active_by_id = next_active
             await asyncio.sleep(self.poll_interval_seconds)
 
+    def restore_active_sessions(self, reason: str = "watcher_stop") -> dict[str, Any]:
+        restored: list[dict[str, Any]] = []
+        for game_id, session in list(self._optimization_sessions.items()):
+            rollback_result = rollback_session(session.get("session_changes"))
+            restored.append({"game_id": game_id, "rollback": rollback_result})
+            self._optimization_sessions.pop(game_id, None)
+
+        if restored:
+            self.last_optimization_action = {
+                "phase": "rollback",
+                "timestamp": _now_iso(),
+                "reason": reason,
+                "restored_sessions": len(restored),
+                "success": all(item["rollback"].get("success", False) for item in restored),
+            }
+
+        return {"restored": restored, "count": len(restored), "reason": reason}
+
     def stop(self) -> None:
+        self.restore_active_sessions(reason="watcher_stop")
         self.running = False
 
     def status(self) -> dict[str, Any]:
@@ -409,5 +523,7 @@ class GameWatcher:
             "matching_strategy": {
                 "name": "scored_executable_path_title",
                 "confidence_threshold": 0.62,
+                "ignored_processes_count": len(KNOWN_IGNORED_PROCESS_NAMES),
+                "optimization_delay_seconds": self.optimization_delay_seconds,
             },
         }

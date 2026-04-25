@@ -3,18 +3,24 @@ from __future__ import annotations
 from typing import Any
 
 import psutil
-import win32api
-import win32con
-import win32process
+
+try:  # pragma: no cover - exercised via import tests on non-Windows
+    import win32api
+    import win32con
+    import win32process
+except Exception:  # pragma: no cover - optional Windows-only dependency
+    win32api = None
+    win32con = None
+    win32process = None
 
 from .logging_setup import get_logger
 
 
 PRIORITY_MAP = {
-    "normal": win32process.NORMAL_PRIORITY_CLASS,
-    "high": win32process.HIGH_PRIORITY_CLASS,
-    "realtime": win32process.REALTIME_PRIORITY_CLASS,
-    "below_normal": win32process.BELOW_NORMAL_PRIORITY_CLASS,
+    "normal": getattr(win32process, "NORMAL_PRIORITY_CLASS", 0x00000020),
+    "high": getattr(win32process, "HIGH_PRIORITY_CLASS", 0x00000080),
+    "realtime": getattr(win32process, "REALTIME_PRIORITY_CLASS", 0x00000100),
+    "below_normal": getattr(win32process, "BELOW_NORMAL_PRIORITY_CLASS", 0x00004000),
 }
 
 SAFE_BACKGROUND_PROCESSES = [
@@ -29,6 +35,8 @@ logger = get_logger(__name__)
 
 
 def _set_process_priority(pid: int, priority_class: int) -> tuple[bool, str | None]:
+    if win32api is None or win32con is None or win32process is None:
+        return False, "Windows priority APIs unavailable"
     access = win32con.PROCESS_SET_INFORMATION | win32con.PROCESS_QUERY_INFORMATION
     handle = None
     try:
@@ -46,6 +54,8 @@ def _set_process_priority(pid: int, priority_class: int) -> tuple[bool, str | No
 
 
 def _get_process_priority(pid: int) -> tuple[int | None, str | None]:
+    if win32api is None or win32con is None or win32process is None:
+        return None, "Windows priority APIs unavailable"
     access = win32con.PROCESS_QUERY_INFORMATION
     handle = None
     try:
@@ -458,7 +468,10 @@ def rollback_session(session_changes: list[dict[str, Any]] | None) -> dict[str, 
                 requested=affinity_before,
             )
             affinity, affinity_error = _sanitize_affinity(affinity_before)
-            if affinity_error:
+            if affinity_before is None:
+                action["skipped"] = True
+                action["reason"] = "missing_previous_affinity"
+            elif affinity_error:
                 action["skipped"] = True
                 action["reason"] = affinity_error
             else:
